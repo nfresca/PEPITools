@@ -1,0 +1,12 @@
+# Generados en tiempo de ejecución
+calendario_cache.json
+pepistream.ico
+yt-dlp.exe
+
+# Config de Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
