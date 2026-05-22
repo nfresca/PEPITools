@@ -1,3 +1,6 @@
+# Acceso directo (rutas absolutas, no portable)
+PEPITools.lnk
+
 # Generados en tiempo de ejecución
 calendario_cache.json
 pepistream.ico
