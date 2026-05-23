@@ -36,6 +36,11 @@ HIPO_ABBREV = {
     "Hipódromo de San Isidro": "San Isidro",
     "Hipódromo de La Plata":   "La Plata",
 }
+HIPO_WEBSITES = {
+    "Hipódromo de Palermo":    "https://old.palermo.com.ar/es/turf/calendario-de-carreras",
+    "Hipódromo de San Isidro": "https://hipodromosanisidro.com/programas/",
+    "Hipódromo de La Plata":   "https://www.hipodromolaplata.gba.gov.ar/ns2012/ih_Infohipica/ih_000InfoHipica.php#",
+}
 
 DEFAULT_PRESETS = [
     {"name": "Hipódromo de Palermo",    "url": ""},
@@ -275,11 +280,8 @@ def _palermo_programa_pdf(today) -> str:
     return ""
 
 
-def _preset_website(presets: list, name: str) -> str:
-    for p in presets:
-        if p.get("name") == name:
-            return p.get("website", "")
-    return ""
+def _preset_website(name: str) -> str:
+    return HIPO_WEBSITES.get(name, "")
 
 
 # ── estilos ttk ───────────────────────────────────────────────────────────────
@@ -627,7 +629,7 @@ class App(tk.Tk):
     def _open_preset_dialog(self):
         dlg = tk.Toplevel(self)
         dlg.title("Configurar Hipódromos")
-        dlg.geometry("520x310")
+        dlg.geometry("520x210")
         dlg.configure(bg=BG_DARK)
         dlg.resizable(False, False)
         dlg.grab_set()
@@ -635,8 +637,7 @@ class App(tk.Tk):
         entry_cfg = dict(bg=BG_ENTRY, fg=TEXT, insertbackground=ACCENT,
                          relief="flat", font=("Segoe UI", 9), bd=4)
 
-        url_vars:     list[tk.StringVar] = []
-        website_vars: list[tk.StringVar] = []
+        url_vars: list[tk.StringVar] = []
 
         for p in self._presets:
             grp = tk.Frame(dlg, bg=BG_DARK)
@@ -644,7 +645,6 @@ class App(tk.Tk):
             tk.Label(grp, text=p["name"], bg=BG_DARK, fg=ACCENT,
                      font=("Segoe UI", 9, "bold")).pack(anchor="w")
 
-            # stream URL
             r1 = tk.Frame(grp, bg=BG_DARK)
             r1.pack(fill="x", pady=(2, 0))
             tk.Label(r1, text="Stream:", bg=BG_DARK, fg=MUTED,
@@ -653,19 +653,9 @@ class App(tk.Tk):
             tk.Entry(r1, textvariable=vu, **entry_cfg).pack(side="left", fill="x", expand=True)
             url_vars.append(vu)
 
-            # website URL
-            r2 = tk.Frame(grp, bg=BG_DARK)
-            r2.pack(fill="x", pady=(2, 0))
-            tk.Label(r2, text="Web:", bg=BG_DARK, fg=MUTED,
-                     font=("Segoe UI", 8), width=8, anchor="w").pack(side="left")
-            vw = tk.StringVar(value=p.get("website", ""))
-            tk.Entry(r2, textvariable=vw, **entry_cfg).pack(side="left", fill="x", expand=True)
-            website_vars.append(vw)
-
         def _save():
             for i in range(len(self._presets)):
-                self._presets[i]["url"]     = url_vars[i].get().strip()
-                self._presets[i]["website"] = website_vars[i].get().strip()
+                self._presets[i]["url"] = url_vars[i].get().strip()
             _save_presets(self._presets)
             self._update_hoy_strip()
             dlg.destroy()
@@ -1128,7 +1118,7 @@ class App(tk.Tk):
         from datetime import date
         idx  = str(date.today().weekday())
         hipo = self._calendar.get(idx, "")
-        web  = _preset_website(self._presets, hipo)
+        web  = _preset_website(hipo)
         if web:
             webbrowser.open(web)
 
@@ -1170,7 +1160,7 @@ class App(tk.Tk):
             # botón que abre el sitio web del hipódromo seleccionado
             def _make_web_cmd(v=var):
                 def _cmd():
-                    web = _preset_website(self._presets, v.get())
+                    web = _preset_website(v.get())
                     if web: webbrowser.open(web)
                 return _cmd
             tk.Button(row, text="🌐", bg=BG_DARK, fg=MUTED,
@@ -1239,11 +1229,12 @@ class CalendarDialog(tk.Toplevel):
         from datetime import date
         _t = date.today()
         self._year, self._month = _t.year, _t.month
-        self._races: dict = {}
-        self._frames: list = []
+        self._races:       dict = {}
+        self._frames:      list = []
+        self._pending_day: str  = ""
 
         self.title("Calendario de carreras")
-        self.geometry("580x560")
+        self.geometry("580x580")
         self.configure(bg=BG_DARK)
         self.resizable(False, False)
         self.grab_set()
@@ -1305,10 +1296,30 @@ class CalendarDialog(tk.Toplevel):
                      bg=BG_DARK, fg=TEXT,
                      font=("Segoe UI", 10)).pack(side="left", padx=(0, 8))
 
+        # barra de edición inline (oculta hasta que se haga clic en un día)
+        self._sel_bar = tk.Frame(self, bg=BG_CARD, pady=6)
+        self._sel_day_lbl = tk.Label(self._sel_bar, text="", bg=BG_CARD, fg=MUTED,
+                                     font=("Segoe UI", 9, "bold"))
+        self._sel_day_lbl.pack(side="left", padx=(12, 8))
+        for _n in list(HIPO_COLORS.keys()):
+            _c = HIPO_COLORS[_n]
+            _ab = HIPO_ABBREV[_n]
+            tk.Button(self._sel_bar, text=_ab,
+                      bg=BG_DARK, fg=_c, activebackground=BG_ENTRY,
+                      font=("Segoe UI", 9, "bold"), relief="flat",
+                      padx=8, pady=3, cursor="hand2",
+                      command=lambda n=_n: self._apply_day_event(n)).pack(side="left", padx=2)
+        tk.Button(self._sel_bar, text="ninguno",
+                  bg=BG_DARK, fg=MUTED, activebackground=BG_ENTRY,
+                  font=("Segoe UI", 9), relief="flat",
+                  padx=8, pady=3, cursor="hand2",
+                  command=lambda: self._apply_day_event("")).pack(side="left", padx=(2, 12))
+
         # estado
         self._status_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self._status_var,
-                 bg=BG_DARK, fg=MUTED, font=("Segoe UI", 9)).pack(pady=(6, 10))
+        self._status_lbl_w = tk.Label(self, textvariable=self._status_var,
+                                      bg=BG_DARK, fg=MUTED, font=("Segoe UI", 9))
+        self._status_lbl_w.pack(pady=(6, 10))
 
     # ── datos ─────────────────────────────────────────────────────────────────
     def _load_data(self):
@@ -1317,7 +1328,7 @@ class CalendarDialog(tk.Toplevel):
             self._races = cache.get("races", {})
             self._render()
             ts = cache.get("fetched_at", "")[:16].replace("T", " ")
-            self._status_var.set(f"Actualizado: {ts}  —  clic en un día para seleccionarlo")
+            self._status_var.set(f"Actualizado: {ts}  —  clic en un día para editar el evento")
         else:
             self._force_refresh()
 
@@ -1329,15 +1340,40 @@ class CalendarDialog(tk.Toplevel):
     def _do_fetch(self):
         races = _fetch_race_calendar()
         from datetime import datetime
-        cache = {"fetched_at": datetime.now().isoformat(), "races": races}
+        # Merge: los datos manuales se preservan; la web solo sobreescribe los días que encuentra
+        merged = dict(self._races)
+        merged.update(races)
+        cache = {"fetched_at": datetime.now().isoformat(), "races": merged}
         _save_race_cache(cache)
-        self._races = races
-        now     = datetime.now().strftime("%d/%m/%Y %H:%M")
-        summary = _calendar_summary(races)
+        self._races = merged
+        now = datetime.now().strftime("%d/%m/%Y %H:%M")
         self.after(0, self._render)
         self.after(0, lambda: self._status_var.set(
-            f"Actualizado: {now}  ·  {summary}"))
+            f"Actualizado: {now}  —  clic en un día para editar el evento"))
         self.after(0, lambda: self._btn_ref.config(state="normal"))
+
+    # ── edición inline de evento por día ─────────────────────────────────────
+    def _on_day_click(self, d_str: str):
+        from datetime import date
+        self._pending_day = d_str
+        d = date.fromisoformat(d_str)
+        self._sel_day_lbl.config(text=f"{d.day} {MESES_ES[d.month-1]}:")
+        if not self._sel_bar.winfo_ismapped():
+            self._sel_bar.pack(fill="x", pady=(6, 0), before=self._status_lbl_w)
+
+    def _apply_day_event(self, hipo_name: str):
+        d_str = self._pending_day
+        if hipo_name:
+            self._races[d_str] = hipo_name
+        else:
+            self._races.pop(d_str, None)
+        from datetime import datetime
+        cache = _load_race_cache() or {"fetched_at": datetime.now().isoformat(), "races": {}}
+        cache["races"] = self._races
+        _save_race_cache(cache)
+        self._app._update_hoy_strip()
+        self._sel_bar.pack_forget()
+        self._render()
 
     # ── renderizado ───────────────────────────────────────────────────────────
     def _update_hdr(self):
@@ -1380,7 +1416,7 @@ class CalendarDialog(tk.Toplevel):
                 bg = "#222218" if is_today else (BG_CARD if hipo else "#161b22")
                 frame.config(bg=bg,
                              highlightbackground=ACCENT if is_today else SEP_CLR,
-                             cursor="hand2" if hipo else "")
+                             cursor="hand2")
 
                 num = tk.Label(frame, text=str(day), bg=bg,
                                fg=ACCENT if is_today else (TEXT if hipo else MUTED),
@@ -1397,11 +1433,8 @@ class CalendarDialog(tk.Toplevel):
                     hi.pack()
                     widgets.append(hi)
 
-                    def _click(h=hipo):
-                        self._app._select_by_name(h)
-                        self.destroy()
-                    for ww in widgets:
-                        ww.bind("<Button-1>", lambda e, h=hipo: _click(h))
+                for ww in widgets:
+                    ww.bind("<Button-1>", lambda e, d=d_str: self._on_day_click(d))
 
 
 def _hover(btn: tk.Button, fg_normal, fg_hover, bg_normal, bg_hover):
