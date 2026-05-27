@@ -188,6 +188,40 @@ def _calendar_summary(races: dict) -> str:
 
 
 
+def _laplata_programa_pdf(today) -> str:
+    """
+    Busca el numReu para la fecha dada en ih_000InfoHipica.php y construye la URL
+    de verTelas.php (formato lista). Nunca usa turfpremium.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+
+    fecha_str = f"{today.day:02d}/{today.month:02d}/{today.year}"
+    fecha_enc = fecha_str.replace("/", "%2F")
+    base = "https://www.hipodromolaplata.gba.gov.ar/ns2012"
+
+    try:
+        s = requests.Session()
+        s.headers["User-Agent"] = SCRAPE_UA
+        r = s.get(f"{base}/ih_Infohipica/ih_000InfoHipica.php", timeout=15)
+        r.encoding = r.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "verPrograma.php" in href or "verTelas.php" in href:
+                if fecha_str in href or fecha_enc in href:
+                    m_reu = re.search(r"numReu=(\d+)", href)
+                    m_ano = re.search(r"ano=(\d+)", href)
+                    if m_reu and m_ano:
+                        return (f"{base}/wsAdmin/programaOficial/verTelas.php"
+                                f"?numReu={m_reu.group(1)}&ano={m_ano.group(1)}"
+                                f"&fecha={fecha_str}")
+    except Exception:
+        pass
+    return ""
+
+
 def _san_isidro_programa_pdf(today) -> str:
     """
     Busca el PDF del Programa Oficial de San Isidro para la fecha dada.
@@ -1073,7 +1107,22 @@ class App(tk.Tk):
 
         self._set_status("Buscando programa del día…", warn=True)
         try:
-            today = date.today()
+            today    = date.today()
+            cache    = _load_race_cache()
+            hoy_hipo = cache.get("races", {}).get(today.isoformat(), "") if cache else ""
+
+            # La Plata: sitio oficial, nunca turfpremium
+            if "plata" in hoy_hipo.lower():
+                self._set_status("Buscando en hipodromolaplata.gba.gov.ar…", warn=True)
+                pdf_url = _laplata_programa_pdf(today)
+                if pdf_url:
+                    self._set_status("Abriendo programa de La Plata…")
+                    webbrowser.open(pdf_url)
+                else:
+                    self._set_status("⚠  No se encontró el programa de La Plata de hoy", err=True)
+                return
+
+            # Palermo / San Isidro: intentar turfpremium primero
             fecha = f"{today.year}/{today.month:02d}/{today.day:02d}"
             url   = (f"https://turfpremium.com.ar/web/web/gral/progra/"
                      f"progranrocarr.php?idfec={fecha}&idi=es")
@@ -1092,10 +1141,7 @@ class App(tk.Tk):
                 webbrowser.open(pdf_url)
                 return
 
-            # ── fallback según hipódromo ─────────────────────────────────────
-            cache    = _load_race_cache()
-            hoy_hipo = cache.get("races", {}).get(today.isoformat(), "") if cache else ""
-
+            # fallback por sitio oficial del hipódromo
             if "palermo" in hoy_hipo.lower():
                 self._set_status("Buscando en palermo.com.ar…", warn=True)
                 pdf_url = _palermo_programa_pdf(today)
