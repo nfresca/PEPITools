@@ -193,7 +193,7 @@ def _laplata_programa_pdf(today) -> str:
     Busca el numReu para la fecha dada en ih_000InfoHipica.php y construye la URL
     de verTelas.php (formato lista). Nunca usa turfpremium.
     """
-    import requests
+    import re, requests
     from bs4 import BeautifulSoup
 
     fecha_str = f"{today.day:02d}/{today.month:02d}/{today.year}"
@@ -1110,6 +1110,15 @@ class App(tk.Tk):
             today    = date.today()
             cache    = _load_race_cache()
             hoy_hipo = cache.get("races", {}).get(today.isoformat(), "") if cache else ""
+            # Si el caché expiró, igual leemos los hipódromos del archivo
+            if not hoy_hipo:
+                try:
+                    import json as _json
+                    with open(CACHE_FILE, encoding="utf-8") as _f:
+                        _raw = _json.load(_f)
+                    hoy_hipo = _raw.get("races", {}).get(today.isoformat(), "")
+                except Exception:
+                    pass
 
             # La Plata: sitio oficial, nunca turfpremium
             if "plata" in hoy_hipo.lower():
