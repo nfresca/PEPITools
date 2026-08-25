@@ -5,6 +5,7 @@ PEPITools.lnk
 calendario_cache.json
 pepistream.ico
 yt-dlp.exe
+logs/
 
 # Config de Claude Code
 .claude/

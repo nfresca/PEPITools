@@ -191,34 +191,45 @@ def _calendar_summary(races: dict) -> str:
 def _laplata_programa_pdf(today) -> str:
     """
     Busca el numReu para la fecha dada en ih_000InfoHipica.php y construye la URL
-    de verTelas.php (formato lista). Nunca usa turfpremium.
+    de verTelas.php (formato lista con 1 carrera por página). Nunca usa turfpremium.
     """
-    import re, requests
+    import re, requests, time
     from bs4 import BeautifulSoup
 
     fecha_str = f"{today.day:02d}/{today.month:02d}/{today.year}"
     fecha_enc = fecha_str.replace("/", "%2F")
     base = "https://www.hipodromolaplata.gba.gov.ar/ns2012"
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/124.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-AR,es;q=0.9",
+        "Referer": "https://www.hipodromolaplata.gba.gov.ar/",
+    }
 
-    try:
-        s = requests.Session()
-        s.headers["User-Agent"] = SCRAPE_UA
-        r = s.get(f"{base}/ih_Infohipica/ih_000InfoHipica.php", timeout=15)
-        r.encoding = r.apparent_encoding or "utf-8"
-        soup = BeautifulSoup(r.text, "html.parser")
+    for attempt in range(2):
+        try:
+            s = requests.Session()
+            s.headers.update(headers)
+            r = s.get(f"{base}/ih_Infohipica/ih_000InfoHipica.php", timeout=20)
+            r.encoding = r.apparent_encoding or "utf-8"
+            soup = BeautifulSoup(r.text, "html.parser")
 
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "verPrograma.php" in href or "verTelas.php" in href:
-                if fecha_str in href or fecha_enc in href:
-                    m_reu = re.search(r"numReu=(\d+)", href)
-                    m_ano = re.search(r"ano=(\d+)", href)
-                    if m_reu and m_ano:
-                        return (f"{base}/wsAdmin/programaOficial/verTelas.php"
-                                f"?numReu={m_reu.group(1)}&ano={m_ano.group(1)}"
-                                f"&fecha={fecha_str}")
-    except Exception:
-        pass
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                if "verPrograma.php" in href or "verTelas.php" in href:
+                    if fecha_str in href or fecha_enc in href:
+                        m_reu = re.search(r"numReu=(\d+)", href)
+                        m_ano = re.search(r"ano=(\d+)", href)
+                        if m_reu and m_ano:
+                            return (f"{base}/wsAdmin/programaOficial/verTelas.php"
+                                    f"?numReu={m_reu.group(1)}&ano={m_ano.group(1)}"
+                                    f"&fecha={fecha_str}")
+            break  # respuesta OK pero sin link de hoy → no reintentar
+        except Exception:
+            if attempt == 0:
+                time.sleep(2)
     return ""
 
 
@@ -342,7 +353,7 @@ class App(tk.Tk):
 
         self._presets:   list = _load_presets()
         self._calendar:  dict = _load_calendar()
-        self._casts:     dict = {}   # name → ip
+        self._casts:     dict = {}   # name → CastInfo (pychromecast)
         self._cast_vars: dict = {}   # name → BooleanVar
         self._ready:        bool = False
         self._logo_photo         = None
@@ -352,6 +363,7 @@ class App(tk.Tk):
         self._cancelled:  bool = False
         self._active_cast_names: list = []  # nombres de los Chromecasts en sesión activa
         self._vlc_procs:        list = []   # procesos VLC activos
+        self._cast_instances:   list = []   # objetos pychromecast activos
         self._current_url:  str  = ""       # URL usada en la última transmisión
 
         self._build_ui()
@@ -494,16 +506,33 @@ class App(tk.Tk):
                                      bg=BG_CARD, fg=MUTED, font=("Segoe UI", 10))
         self._no_cast_lbl.pack(anchor="w")
 
-        # ── botón transmitir ──────────────────────────────────────────────────
-        self._btn_tx = tk.Button(self, text="▶   Transmitir",
+        # ── botón transmitir + abrir enlace en vivo ────────────────────────────
+        tx_row = tk.Frame(self, bg=BG_DARK)
+        tx_row.pack(fill="x", padx=18, pady=(8, 4))
+        tx_row.columnconfigure(0, weight=4)
+        tx_row.columnconfigure(1, weight=1)
+
+        self._btn_tx = tk.Button(tx_row, text="▶   Transmitir",
                                  bg=ACCENT, fg="#ffffff",
                                  activebackground=ACCENT_H, activeforeground="#ffffff",
                                  font=("Segoe UI", 14, "bold"),
-                                 relief="flat", cursor="hand2", height=2,
+                                 relief="flat", cursor="hand2",
+                                 pady=14,
                                  command=self._transmit_thread)
-        self._btn_tx.pack(fill="x", padx=18, pady=(8, 4))
+        self._btn_tx.grid(row=0, column=0, sticky="nsew")
         self._btn_tx.bind("<Enter>", lambda _: self._btn_tx.config(bg=ACCENT_H) if self._ready else None)
         self._btn_tx.bind("<Leave>", lambda _: self._btn_tx.config(bg=ACCENT)   if self._ready else None)
+
+        self._btn_open_live = tk.Button(tx_row, text="🔗",
+                                 bg=BG_ENTRY, fg=ACCENT,
+                                 activebackground=ACCENT_H, activeforeground="#ffffff",
+                                 font=("Segoe UI", 14, "bold"),
+                                 relief="flat", cursor="hand2",
+                                 pady=14,
+                                 command=self._open_live_link)
+        self._btn_open_live.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._btn_open_live.bind("<Enter>", lambda _: self._btn_open_live.config(bg=ACCENT_H, fg="#ffffff"))
+        self._btn_open_live.bind("<Leave>", lambda _: self._btn_open_live.config(bg=BG_ENTRY, fg=ACCENT))
 
         # ── mini controles (solo visibles al transmitir) ──────────────────────
         ctrl = tk.Frame(self, bg=BG_DARK)
@@ -616,6 +645,10 @@ class App(tk.Tk):
             try: proc.kill()
             except Exception: pass
         self._vlc_procs.clear()
+        for _c in self._cast_instances:
+            try: _c.media_controller.stop(); _c.disconnect()
+            except Exception: pass
+        self._cast_instances.clear()
         self._active_cast_names.clear()
         self._set_status("Transmisión detenida.")
         self._set_btn_state("idle")
@@ -720,7 +753,7 @@ class App(tk.Tk):
             return
 
         for name in names:
-            var = tk.BooleanVar(value=True)
+            var = tk.BooleanVar(value=False)
             self._cast_vars[name] = var
             cb = tk.Checkbutton(self._cast_frame,
                                 text=f"  {name}",
@@ -883,13 +916,14 @@ class App(tk.Tk):
 
             self._casts.clear()
 
-            # Solo discovery mDNS — no creamos objetos Chromecast, solo necesitamos IPs
+            # discovery mDNS — guardamos el CastInfo completo (hace falta para
+            # reconectar con get_chromecast_from_host al momento de transmitir)
             from pychromecast.discovery import discover_chromecasts, stop_discovery
             services, browser = discover_chromecasts(timeout=8)
             stop_discovery(browser)
 
             for svc in services:
-                self._casts[svc.friendly_name] = svc.host
+                self._casts[svc.friendly_name] = svc
 
             names = list(self._casts)
             self.after(0, lambda: self._update_cast_checkboxes(names))
@@ -911,13 +945,20 @@ class App(tk.Tk):
     def _transmit_thread(self):
         threading.Thread(target=self._transmit, daemon=True).start()
 
+    def _open_live_link(self):
+        url = self._url_var.get().strip()
+        if not url:
+            self._set_status("⚠  Selecciona un hipódromo o pega un link", err=True)
+            return
+        webbrowser.open(url)
+
     def _transmit(self):
         url = self._url_var.get().strip()
         if not url:
             self._set_status("⚠  Selecciona un hipódromo o pega un link", err=True)
             return
 
-        selected = [(n, ip) for n, ip in self._casts.items()
+        selected = [(n, svc) for n, svc in self._casts.items()
                     if n in self._cast_vars and self._cast_vars[n].get()]
         if not selected:
             self._set_status("⚠  Selecciona al menos un dispositivo Chromecast", err=True)
@@ -976,7 +1017,7 @@ class App(tk.Tk):
             self._set_btn_state("idle")
             return
 
-        # ── lanzar VLC (invisible) por cada Chromecast ───────────────────
+        # ── lanzar VLC (transcodifica y sirve HTTP local) + Chromecasts ────────────
         if not os.path.isfile(VLC_PATH):
             self._set_status(f"⚠  VLC no encontrado en {VLC_PATH}", err=True)
             self._set_btn_state("idle")
@@ -986,21 +1027,97 @@ class App(tk.Tk):
             try: proc.kill()
             except Exception: pass
         self._vlc_procs.clear()
+        for _c in self._cast_instances:
+            try: _c.media_controller.stop(); _c.disconnect()
+            except Exception: pass
+        self._cast_instances.clear()
         self._active_cast_names.clear()
         self._current_url = url
 
+        import pychromecast
+        _ensure_firewall_rule()
+
+        # ── un VLC por Chromecast: transcodifica y sirve HTTP local (mp4) ─────────
+        # pychromecast le ordena a cada Chromecast reproducir esa URL local.
+        # Se evita el módulo interno "chromecast" de VLC (poco confiable con
+        # varios dispositivos simultáneos): VLC solo transcodifica/sirve, y el
+        # control de la sesión Cast queda en pychromecast (ya usado para
+        # descubrir dispositivos).
+        local_ip = _local_lan_ip()
+        BASE_PORT = 8010
+        log_dir = os.path.join(APP_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+
         launched, failed = [], []
-        for name, ip in selected:
-            self._set_status(f"Conectando a «{name}»…")
+        for i, (name, svc) in enumerate(selected):
+            if self._cancelled:
+                break
+
+            # URL fresca para cada dispositivo (el primero ya la tiene)
+            if i == 0:
+                this_url = stream_url
+            else:
+                self._set_status(f"Obteniendo stream para «{name}»…")
+                try:
+                    _r = subprocess.run(
+                        ["yt-dlp", "-g",
+                         "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
+                         "--no-playlist", url],
+                        capture_output=True, timeout=25, creationflags=NO_WINDOW,
+                    )
+                    _lines = [ln.strip() for ln in _r.stdout.decode(errors="replace").splitlines()
+                              if ln.strip().startswith("http")]
+                    this_url = _lines[0] if _lines else stream_url
+                except Exception:
+                    this_url = stream_url
+
+            port = BASE_PORT + i
+            local_url = f"http://{local_ip}:{port}/stream.mp4"
+            sout = (
+                f"#transcode{{vcodec=h264,vb=2000,acodec=mp3,ab=128,"
+                f"channels=2,samplerate=44100}}"
+                f":std{{access=http,mux=mp4,dst=:{port}/stream.mp4}}"
+            )
+
+            self._set_status(f"Iniciando VLC para «{name}»…")
+            safe_name = "".join(c if c.isalnum() else "_" for c in name)
+            log_path = os.path.join(log_dir, f"vlc_{safe_name}.log")
             try:
+                log_f = open(log_path, "wb")
                 proc = subprocess.Popen(
-                    [VLC_PATH, stream_url,
+                    [VLC_PATH, this_url,
                      "--intf", "dummy", "--dummy-quiet",
-                     f"--sout=#chromecast{{ip={ip},mux=mp4}}",
-                     "--sout-keep", "--no-video-title-show"],
+                     "--no-video-title-show",
+                     "--network-caching=3000",
+                     "--live-caching=3000",
+                     f"--sout={sout}",
+                     "--sout-keep"],
+                    stdout=log_f, stderr=subprocess.STDOUT,
                     startupinfo=_hidden_si(),
                 )
                 self._vlc_procs.append(proc)
+            except Exception as exc:
+                failed.append(f"{name}: no se pudo iniciar VLC ({exc})")
+                continue
+
+            # esperar a que el servidor HTTP de VLC esté escuchando antes de castear
+            self._set_status(f"Esperando stream de «{name}»…")
+            if not self._wait_tcp_ready(local_ip, port, timeout=12):
+                failed.append(f"{name}: VLC no levantó el servidor HTTP a tiempo "
+                              f"(ver {log_path})")
+                continue
+
+            self._set_status(f"Conectando «{name}»…")
+            try:
+                cast = pychromecast.get_chromecast_from_host(
+                    (svc.host, svc.port, svc.uuid, svc.model_name, svc.friendly_name),
+                    timeout=10,
+                )
+                cast.wait(timeout=10)
+                mc = cast.media_controller
+                mc.play_media(local_url, "video/mp4")
+                mc.block_until_active(timeout=10)
+                self._cast_instances.append(cast)
                 self._active_cast_names.append(name)
                 launched.append(name)
             except Exception as exc:
@@ -1009,13 +1126,25 @@ class App(tk.Tk):
         if launched and not failed:
             self._set_status(f"✓  Transmitiendo a: {'  |  '.join(launched)}")
             self._set_btn_state("streaming")
-        elif launched and failed:
+        elif launched:
             self._set_status(f"✓ {len(launched)} OK  /  ⚠ {failed[0]}", warn=True)
             self._set_btn_state("streaming")
         else:
-            # mostrar el error real para poder diagnosticar
             self._set_status(f"Error: {failed[0] if failed else 'sin dispositivos'}", err=True)
             self._set_btn_state("idle")
+
+    @staticmethod
+    def _wait_tcp_ready(host: str, port: int, timeout: float = 12) -> bool:
+        """Espera a que un puerto TCP local empiece a aceptar conexiones."""
+        import socket, time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=1):
+                    return True
+            except OSError:
+                time.sleep(0.4)
+        return False
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1101,7 +1230,7 @@ class App(tk.Tk):
         threading.Thread(target=self._open_programa, daemon=True).start()
 
     def _open_programa(self):
-        import requests
+        import re, requests
         from bs4 import BeautifulSoup
         from datetime import date
 
@@ -1120,7 +1249,31 @@ class App(tk.Tk):
                 except Exception:
                     pass
 
-            # La Plata: sitio oficial, nunca turfpremium
+            # Si el caché no tiene el hipódromo de hoy, consultarlo ahora desde turfpremium
+            if not hoy_hipo:
+                try:
+                    s0 = requests.Session()
+                    s0.headers["User-Agent"] = SCRAPE_UA
+                    s0.get(TURFPREMIUM_LOGIN, timeout=10)
+                    r0 = s0.get(TURFPREMIUM_PROGRA, timeout=15)
+                    r0.encoding = r0.apparent_encoding or "utf-8"
+                    soup0 = BeautifulSoup(r0.text, "html.parser")
+                    for a0 in soup0.find_all("a", class_="menuprogint"):
+                        href0 = a0.get("href", "")
+                        m0 = re.search(r"idfec=(\d{4})/(\d{1,2})/(\d{1,2})", href0)
+                        if m0:
+                            try:
+                                if date(int(m0.group(1)), int(m0.group(2)), int(m0.group(3))) == today:
+                                    parts0 = a0.get_text(" ", strip=True).split()
+                                    abbr0  = parts0[-1].strip() if parts0 else ""
+                                    hoy_hipo = TURFPREMIUM_MAP.get(abbr0, "")
+                                    break
+                            except ValueError:
+                                pass
+                except Exception:
+                    pass
+
+            # La Plata: sitio oficial con formato lista, nunca turfpremium
             if "plata" in hoy_hipo.lower():
                 self._set_status("Buscando en hipodromolaplata.gba.gov.ar…", warn=True)
                 pdf_url = _laplata_programa_pdf(today)
@@ -1128,7 +1281,8 @@ class App(tk.Tk):
                     self._set_status("Abriendo programa de La Plata…")
                     webbrowser.open(pdf_url)
                 else:
-                    self._set_status("⚠  No se encontró el programa de La Plata de hoy", err=True)
+                    webbrowser.open(HIPO_WEBSITES["Hipódromo de La Plata"])
+                    self._set_status("⚠  No se encontró la reunión de hoy — abriendo sitio de La Plata", warn=True)
                 return
 
             # Palermo / San Isidro: intentar turfpremium primero
@@ -1272,6 +1426,42 @@ def _hidden_si() -> subprocess.STARTUPINFO:
 
 def _prepend_path(directory: str):
     os.environ["PATH"] = directory + os.pathsep + os.environ.get("PATH", "")
+
+
+_FIREWALL_CHECKED = False
+
+
+def _ensure_firewall_rule():
+    """Intenta abrir los puertos HTTP de VLC en el Firewall de Windows (best-effort:
+    requiere permisos de administrador; si falla, se ignora silenciosamente)."""
+    global _FIREWALL_CHECKED
+    if _FIREWALL_CHECKED:
+        return
+    _FIREWALL_CHECKED = True
+    try:
+        subprocess.run(
+            ["netsh", "advfirewall", "firewall", "add", "rule",
+             "name=PEPITools VLC Chromecast",
+             "dir=in", "action=allow", "protocol=TCP",
+             "localport=8010-8030",
+             f"program={VLC_PATH}"],
+            capture_output=True, timeout=5, creationflags=NO_WINDOW,
+        )
+    except Exception:
+        pass
+
+
+def _local_lan_ip() -> str:
+    """IP de esta PC en la red local (la que los Chromecasts pueden alcanzar)."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return socket.gethostbyname(socket.gethostname())
+    finally:
+        s.close()
 
 
 class CalendarDialog(tk.Toplevel):
