@@ -32,7 +32,11 @@ jobs:
       - name: Compilar el instalador
         run: |
           choco install innosetup --no-progress -y
-          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" PEPITools.iss
+          # Las llaves son necesarias: sin ellas PowerShell lee $env:ProgramFiles
+          # y deja "(x86)" como texto suelto, armando una ruta que no existe.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          & $iscc PEPITools.iss
 
       - uses: actions/upload-artifact@v4
         with:
