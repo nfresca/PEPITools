@@ -1,0 +1,47 @@
+name: Build installer
+
+# Publica el instalador al crear un tag (ej. `git tag v1.0.0 && git push --tags`).
+# Tambien se puede correr a mano desde la pestaña Actions para probar el build
+# sin publicar nada.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # necesario para crear la Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Empaquetar la app
+        run: pyinstaller --noconfirm PEPITools.spec
+
+      - name: Compilar el instalador
+        run: |
+          choco install innosetup --no-progress -y
+          & "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" PEPITools.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PEPITools-Setup
+          path: Output/PEPITools-Setup.exe
+
+      - name: Publicar la Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Output/PEPITools-Setup.exe
+          generate_release_notes: true

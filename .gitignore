@@ -16,3 +16,8 @@ __pycache__/
 *.pyc
 *.pyo
 .ytdlp_update
+
+# Empaquetado (PyInstaller / Inno Setup)
+build/
+dist/
+Output/

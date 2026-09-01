@@ -78,13 +78,42 @@ def _dpi_scale() -> float:
     except Exception:
         return 1.0
 
-APP_DIR        = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)   # True cuando corre como .exe empaquetado
+
+
+def _resource_dir() -> str:
+    """Carpeta de los recursos de solo lectura (imagen, ícono).
+
+    Empaquetado con PyInstaller quedan dentro del bundle, que se extrae a una
+    carpeta temporal cuya ruta llega por `sys._MEIPASS`."""
+    if FROZEN:
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_dir() -> str:
+    """Carpeta donde la app ESCRIBE (presets, calendario, caché, binarios, logs).
+
+    No puede ser la de instalación: si se instala en «Archivos de programa»,
+    esa carpeta es de solo lectura para el usuario y todo intento de guardar
+    fallaría. Tampoco puede ser la temporal del bundle, que se borra al cerrar.
+    Corriendo desde el .py se mantiene junto al script, como siempre."""
+    if not FROZEN:
+        return os.path.dirname(os.path.abspath(__file__))
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    d = os.path.join(base, "PEPITools")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+RES_DIR        = _resource_dir()
+APP_DIR        = _data_dir()
 # VLC ya no se usa: ffmpeg remuxea directo a MP4 fragmentado (ver _CastRelayHandler)
 YTDLP_URL      = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 YTDLP_LOCAL    = os.path.join(APP_DIR, "yt-dlp.exe")
 FFMPEG_URL     = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 FFMPEG_LOCAL   = os.path.join(APP_DIR, "ffmpeg.exe")
-CAT_IMG        = os.path.join(APP_DIR, "Diseño sin título.png")
+CAT_IMG        = os.path.join(RES_DIR, "Diseño sin título.png")
 PRESETS_FILE   = os.path.join(APP_DIR, "presets.json")
 CALENDAR_FILE  = os.path.join(APP_DIR, "calendario.json")
 NO_WINDOW      = subprocess.CREATE_NO_WINDOW
@@ -113,10 +142,19 @@ HIPO_WEBSITES = {
     "Hipódromo de La Plata":   "https://www.hipodromolaplata.gba.gov.ar/ns2012/ih_Infohipica/ih_000InfoHipica.php#",
 }
 
+# Con los canales ya cargados: en una instalación nueva presets.json no existe
+# y se crea a partir de esto, así que si quedaran vacíos los tres botones de
+# hipódromos no servirían hasta configurarlos a mano.
 DEFAULT_PRESETS = [
-    {"name": "Hipódromo de Palermo",    "url": ""},
-    {"name": "Hipódromo de San Isidro", "url": ""},
-    {"name": "Hipódromo de La Plata",   "url": ""},
+    {"name": "Hipódromo de Palermo",
+     "url": "https://www.youtube.com/@hipodromodepalermoshows9483/live",
+     "website": HIPO_WEBSITES["Hipódromo de Palermo"]},
+    {"name": "Hipódromo de San Isidro",
+     "url": "https://www.youtube.com/@hipodromosanisidro/live",
+     "website": HIPO_WEBSITES["Hipódromo de San Isidro"]},
+    {"name": "Hipódromo de La Plata",
+     "url": "https://www.youtube.com/@hipodromodelaplataTV/live",
+     "website": HIPO_WEBSITES["Hipódromo de La Plata"]},
 ]
 
 # ── paleta Steam ──────────────────────────────────────────────────────────────
@@ -922,18 +960,23 @@ class App(tk.Tk):
     # AUTO-SETUP
     # ══════════════════════════════════════════════════════════════════════════
     def _auto_setup(self):
+        # OJO con pip acá: empaquetada, `sys.executable` es el propio .exe, así
+        # que "sys.executable -m pip install" no instalaría nada — relanzaría la
+        # aplicación. En el .exe las librerías ya vienen incluidas, por eso todo
+        # este bloque se salta cuando FROZEN.
 
         # Pillow
         try:
             from PIL import Image  # noqa: F401
         except ImportError:
-            self._set_status("Instalando Pillow…", warn=True)
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install",
-                                       "pillow", "--quiet"], creationflags=NO_WINDOW)
-                importlib.invalidate_caches()
-            except Exception as exc:
-                self._set_status(f"Error instalando Pillow: {exc}", err=True)
+            if not FROZEN:
+                self._set_status("Instalando Pillow…", warn=True)
+                try:
+                    subprocess.check_call([sys.executable, "-m", "pip", "install",
+                                           "pillow", "--quiet"], creationflags=NO_WINDOW)
+                    importlib.invalidate_caches()
+                except Exception as exc:
+                    self._set_status(f"Error instalando Pillow: {exc}", err=True)
         self._apply_images()
 
         # requests + beautifulsoup4 (para scraping del calendario)
@@ -941,6 +984,8 @@ class App(tk.Tk):
             try:
                 importlib.import_module(imp)
             except ImportError:
+                if FROZEN:
+                    continue
                 self._set_status(f"Instalando {pkg}…", warn=True)
                 try:
                     subprocess.check_call([sys.executable, "-m", "pip", "install",
@@ -952,7 +997,11 @@ class App(tk.Tk):
         # pychromecast
         try:
             import pychromecast  # noqa: F401
-        except ImportError:
+        except ImportError as exc0:
+            if FROZEN:
+                self._set_status(f"Error: falta pychromecast en el paquete ({exc0})",
+                                 err=True)
+                return
             self._set_status("Instalando pychromecast (primera vez)…", warn=True)
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install",

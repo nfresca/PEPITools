@@ -13,27 +13,63 @@ Aplicación de escritorio para Windows que transmite el stream en vivo de los hi
 - **Calendario mensual** — visualización del mes con colores por hipódromo
 - **Programa oficial** — abre el PDF del programa del día con un clic
 - **Ir al vivo** — reconecta el stream desde el inicio para eliminar el retraso acumulado
-- **Auto-instalación** — instala todas las dependencias automáticamente en el primer arranque
+- **Sin dependencias que instalar** — el instalador trae todo; `yt-dlp` y `ffmpeg` se descargan solos en el primer arranque y `yt-dlp` se mantiene actualizado
 
 ---
 
 ## Requisitos
 
-- Windows 10/11
-- [Python 3.12+](https://python.org) (el launcher lo instala automáticamente si no está)
-- [VLC media player](https://www.videolan.org/vlc/) instalado en la ruta por defecto (`C:\Program Files\VideoLAN\VLC\`)
+- Windows 10/11 (64 bits)
 - Red local con Chromecast
+- Conexión a internet en el primer arranque (descarga `yt-dlp` y `ffmpeg`)
+
+No hace falta instalar Python ni VLC.
 
 ---
 
-## Instalación y uso
+## Instalación
 
-1. Descargá o cloná este repositorio
-2. Hacé doble clic en **`PEPITools.bat`**
-3. En el primer arranque se instalan automáticamente: `pychromecast`, `Pillow`, `requests`, `beautifulsoup4` y `yt-dlp`
-4. Seleccioná un hipódromo o pegá cualquier URL de YouTube
-5. Hacé clic en **↻** para buscar Chromecasts en tu red
-6. Seleccioná los dispositivos y presioná **Transmitir**
+1. Descargá **`PEPITools-Setup.exe`** desde [Releases](https://github.com/nfresca/PEPITools/releases)
+2. Ejecutalo. No pide permisos de administrador: se instala solo para tu usuario
+3. Abrí PEPITools desde el escritorio o el menú de inicio
+
+En el primer arranque descarga `yt-dlp` y `ffmpeg` (~120 MB en total). Puede
+tardar unos minutos según la conexión; después ya no vuelve a hacerlo.
+
+### Uso
+
+1. Seleccioná un hipódromo o pegá cualquier URL de YouTube en el link manual
+2. Hacé clic en **↻** para buscar Chromecasts en tu red
+3. Seleccioná los dispositivos y presioná **Transmitir**
+
+### Dónde guarda sus datos
+
+Los presets, el calendario, la caché y los binarios descargados van a
+`%LOCALAPPDATA%\PEPITools`. Se conservan al actualizar y se borran al
+desinstalar.
+
+---
+
+## Ejecutar desde el código fuente
+
+```bash
+pip install -r requirements.txt
+python transmiturf.py
+```
+
+O hacé doble clic en `PEPITools.bat`, que instala Python si falta.
+
+## Compilar el instalador
+
+Necesita [Inno Setup 6](https://jrsoftware.org/isinfo.php):
+
+```bash
+pip install -r requirements.txt pyinstaller
+pyinstaller --noconfirm PEPITools.spec
+ISCC.exe PEPITools.iss          # genera Output\PEPITools-Setup.exe
+```
+
+También se compila solo en GitHub Actions al publicar un tag (`v*`).
 
 ---
 
@@ -42,8 +78,8 @@ Aplicación de escritorio para Windows que transmite el stream en vivo de los hi
 | Herramienta | Uso |
 |---|---|
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Extrae la URL del stream de YouTube |
-| [VLC](https://www.videolan.org/vlc/) | Transmite el stream al Chromecast |
-| [pychromecast](https://github.com/balloob/pychromecast) | Descubrimiento de dispositivos Chromecast en la red |
+| [ffmpeg](https://ffmpeg.org/) | Reempaqueta el stream a MP4 fragmentado (sin recodificar) |
+| [pychromecast](https://github.com/balloob/pychromecast) | Descubre los Chromecast y controla la reproducción |
 | [tkinter](https://docs.python.org/3/library/tkinter.html) | Interfaz gráfica |
 | [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | Scraping del calendario de carreras |
 
