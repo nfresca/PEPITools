@@ -5,6 +5,7 @@ PEPITools.lnk
 calendario_cache.json
 pepistream.ico
 yt-dlp.exe
+ffmpeg.exe
 logs/
 
 # Config de Claude Code
@@ -14,3 +15,4 @@ logs/
 __pycache__/
 *.pyc
 *.pyo
+.ytdlp_update

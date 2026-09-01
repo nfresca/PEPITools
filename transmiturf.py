@@ -5,14 +5,85 @@ Multi-Chromecast + Presets de Hipódromos de Argentina.
 Se auto-configura en el primer arranque.
 """
 
-import os, sys, json, shutil, importlib, threading, subprocess, urllib.request, webbrowser
+import os, sys, json, time, queue, shutil, importlib, threading, subprocess, urllib.request, webbrowser
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+if sys.platform == "win32":
+    # declara la app como DPI-aware: sin esto, Windows re-escala (bitmap
+    # stretch) la ventana al recuperar foco (ej. alt+tab) y deja artefactos
+    # visuales — franjas fantasma, texto/bordes corridos, etc.
+    import ctypes
+    from ctypes import wintypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    class _SHELLEXECUTEINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize",       wintypes.DWORD),
+            ("fMask",        ctypes.c_ulong),
+            ("hwnd",         wintypes.HWND),
+            ("lpVerb",       ctypes.c_wchar_p),
+            ("lpFile",       ctypes.c_wchar_p),
+            ("lpParameters", ctypes.c_wchar_p),
+            ("lpDirectory",  ctypes.c_wchar_p),
+            ("nShow",        ctypes.c_int),
+            ("hInstApp",     ctypes.c_void_p),
+            ("lpIDList",     ctypes.c_void_p),
+            ("lpClass",      ctypes.c_wchar_p),
+            ("hKeyClass",    ctypes.c_void_p),
+            ("dwHotKey",     wintypes.DWORD),
+            ("hIcon",        ctypes.c_void_p),
+            ("hProcess",     ctypes.c_void_p),
+        ]
+
+    def _run_elevated_wait(file_: str, params: str, timeout_ms: int = 20000) -> bool:
+        """Ejecuta `file_ params` elevado (UAC) y espera a que termine.
+        Devuelve False si el usuario cancela el UAC o falla el lanzamiento."""
+        SEE_MASK_NOCLOSEPROCESS = 0x00000040
+        sei = _SHELLEXECUTEINFO()
+        sei.cbSize = ctypes.sizeof(sei)
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS
+        sei.lpVerb = "runas"
+        sei.lpFile = file_
+        sei.lpParameters = params
+        sei.nShow = 0  # SW_HIDE
+        if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)):
+            return False
+        if sei.hProcess:
+            ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, timeout_ms)
+            ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+        return True
+
+
+def _dpi_scale() -> float:
+    """Factor de escala del monitor actual (1.0 = 96 DPI / 100%).
+
+    Con la app declarada DPI-aware, Tk escala internamente las fuentes
+    (puntos → píxeles) según el DPI real, pero geometry()/padx/pady son
+    píxeles literales que Tk NO escala. Sin compensar esto, en monitores
+    con >100% de escala el texto queda más grande que la ventana fija y
+    los botones terminan cortados.
+    """
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        return ctypes.windll.user32.GetDpiForSystem() / 96.0
+    except Exception:
+        return 1.0
 
 APP_DIR        = os.path.dirname(os.path.abspath(__file__))
-VLC_PATH       = r"C:\Program Files\VideoLAN\VLC\vlc.exe"
+# VLC ya no se usa: ffmpeg remuxea directo a MP4 fragmentado (ver _CastRelayHandler)
 YTDLP_URL      = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 YTDLP_LOCAL    = os.path.join(APP_DIR, "yt-dlp.exe")
+FFMPEG_URL     = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_LOCAL   = os.path.join(APP_DIR, "ffmpeg.exe")
 CAT_IMG        = os.path.join(APP_DIR, "Diseño sin título.png")
 PRESETS_FILE   = os.path.join(APP_DIR, "presets.json")
 CALENDAR_FILE  = os.path.join(APP_DIR, "calendario.json")
@@ -345,9 +416,15 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("PEPITools")
-        self.geometry("600x660")
+        scale = _dpi_scale()
+        self.geometry(f"{round(600 * scale)}x{round(660 * scale)}")
         self.resizable(False, False)
         self.configure(bg=BG_DARK)
+
+        # evita el recuadro blanco de foco que Windows dibuja sobre los
+        # botones al hacer click o navegar con Tab
+        self.option_add("*Button.highlightThickness", 0)
+        self.option_add("*Button.takeFocus", 0)
 
         _apply_styles()
 
@@ -362,7 +439,7 @@ class App(tk.Tk):
         self._ytdlp_proc: subprocess.Popen | None = None
         self._cancelled:  bool = False
         self._active_cast_names: list = []  # nombres de los Chromecasts en sesión activa
-        self._vlc_procs:        list = []   # procesos VLC activos
+        self._relay                 = None  # servidor HTTP relay (uno, persistente)
         self._cast_instances:   list = []   # objetos pychromecast activos
         self._current_url:  str  = ""       # URL usada en la última transmisión
 
@@ -637,14 +714,12 @@ class App(tk.Tk):
                 proc.kill()
             except Exception:
                 pass
+        self._shutdown_relays()
         self._set_status("Transmisión cancelada.")
         self._set_btn_state("idle")
 
     def _stop_streaming(self):
-        for proc in self._vlc_procs:
-            try: proc.kill()
-            except Exception: pass
-        self._vlc_procs.clear()
+        self._shutdown_relays()
         for _c in self._cast_instances:
             try: _c.media_controller.stop(); _c.disconnect()
             except Exception: pass
@@ -652,6 +727,16 @@ class App(tk.Tk):
         self._active_cast_names.clear()
         self._set_status("Transmisión detenida.")
         self._set_btn_state("idle")
+
+    def _shutdown_relays(self):
+        """Corta el ffmpeg en curso. El servidor queda atado al puerto a
+        propósito (ver _CastRelayServer.set_source): cerrarlo dejaría el puerto
+        bloqueado por TIME_WAIT y la próxima transmisión saltaría al siguiente."""
+        if self._relay:
+            try:
+                self._relay.stop_source()
+            except Exception:
+                pass
 
     def _set_status(self, msg: str, *, err=False, warn=False):
         color = ERR_CLR if err else (WARN_CLR if warn else OK_CLR)
@@ -896,6 +981,45 @@ class App(tk.Tk):
                     self._set_status(f"Error descargando yt-dlp: {exc}", err=True)
                     return
 
+        # Mantener yt-dlp al día: YouTube cambia seguido cómo firma las URLs de
+        # los segmentos, y una versión vieja empieza a recibir HTTP 403 en todos
+        # ellos. El síntoma es idéntico a un problema de red — el stream nunca
+        # arranca — así que conviene actualizar solo, una vez por día.
+        threading.Thread(target=_update_ytdlp_daily, daemon=True).start()
+
+        # ffmpeg — es el motor de la transmisión: remuxea el stream de YouTube
+        # a MP4 fragmentado para el Chromecast (ver _StreamSource). Sin él no
+        # se puede transmitir.
+        if not shutil.which("ffmpeg"):
+            if os.path.isfile(FFMPEG_LOCAL):
+                _prepend_path(APP_DIR)
+            else:
+                self._set_status("Descargando ffmpeg (primera vez)…", warn=True)
+                try:
+                    zip_path = os.path.join(APP_DIR, "_ffmpeg_tmp.zip")
+
+                    def _prog(count, block, total):
+                        if total > 0:
+                            self._set_status(
+                                f"Descargando ffmpeg… {min(int(count*block*100/total),100)}%",
+                                warn=True)
+                    urllib.request.urlretrieve(FFMPEG_URL, zip_path, _prog)
+
+                    import zipfile
+                    with zipfile.ZipFile(zip_path) as zf:
+                        exe_name = next(
+                            n for n in zf.namelist()
+                            if n.lower().endswith("/bin/ffmpeg.exe")
+                        )
+                        with zf.open(exe_name) as src, open(FFMPEG_LOCAL, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                    os.remove(zip_path)
+                    _prepend_path(APP_DIR)
+                except Exception as exc:
+                    self._set_status(f"Error descargando ffmpeg: {exc}", warn=True)
+                    # no bloqueante: la transmisión sin ffmpeg va a fallar,
+                    # pero el resto de la app (PDFs, calendario) sí funciona
+
         self._unlock_controls()
         self._update_hoy_strip()   # muestra desde caché si existe
         threading.Thread(target=self._fetch_today_info, daemon=True).start()
@@ -969,11 +1093,18 @@ class App(tk.Tk):
 
         # ── extraer URL del stream ─────────────────────────────────────────
         self._set_status("Extrayendo URL de stream…  (✕ Cancelar para abortar)")
-        stream_url = None
+        stream_urls = []
         try:
             self._ytdlp_proc = subprocess.Popen(
                 ["yt-dlp", "-g",
-                 "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
+                 # Tope de 720p. Sin tope, "best" puede elegir 4K/60fps y satura
+                 # el WiFi (la red es de 2.4 GHz): los Chromecasts quedan en
+                 # BUFFERING permanente. Incluso a 1080p aparecían cortes con 2
+                 # dispositivos. 720p es de sobra para ver las carreras en la TV
+                 # y deja margen para varios equipos a la vez.
+                 "-f", ("best[ext=mp4][height<=720]/"
+                        "bestvideo[ext=mp4][height<=720]+bestaudio/"
+                        "best[height<=720]/best"),
                  "--no-playlist", url],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1005,7 +1136,8 @@ class App(tk.Tk):
                      if l.strip().startswith("http")]
             if not lines:
                 raise RuntimeError("yt-dlp no devolvió ninguna URL — ¿el canal está en vivo?")
-            stream_url = lines[0]
+            # puede devolver 1 URL (muxada) o 2 (video y audio DASH por separado)
+            stream_urls = lines[:2]
 
         except FileNotFoundError:
             self._set_status("⚠  yt-dlp no encontrado — reinicia la app", err=True)
@@ -1017,16 +1149,13 @@ class App(tk.Tk):
             self._set_btn_state("idle")
             return
 
-        # ── lanzar VLC (transcodifica y sirve HTTP local) + Chromecasts ────────────
-        if not os.path.isfile(VLC_PATH):
-            self._set_status(f"⚠  VLC no encontrado en {VLC_PATH}", err=True)
+        # ── servir el stream a los Chromecasts ────────────────────────────────────
+        if not os.path.isfile(_ffmpeg_exe()) and not shutil.which("ffmpeg"):
+            self._set_status("⚠  ffmpeg no encontrado — reinicia la app", err=True)
             self._set_btn_state("idle")
             return
 
-        for proc in self._vlc_procs:
-            try: proc.kill()
-            except Exception: pass
-        self._vlc_procs.clear()
+        self._shutdown_relays()
         for _c in self._cast_instances:
             try: _c.media_controller.stop(); _c.disconnect()
             except Exception: pass
@@ -1035,77 +1164,59 @@ class App(tk.Tk):
         self._current_url = url
 
         import pychromecast
-        _ensure_firewall_rule()
+        if not _ensure_firewall_rule():
+            self.after(0, lambda: messagebox.showwarning(
+                "Permiso de Firewall necesario",
+                "No se pudo confirmar la regla de Firewall de Windows que deja "
+                "entrar al Chromecast al video (hace falta aceptar el "
+                "permiso de administrador que pide Windows).\n\n"
+                "Sin esa regla, el Chromecast conecta pero la pantalla queda "
+                "negra o vuelve al ícono de cast sin reproducir nada.\n\n"
+                "Volvé a apretar «Transmitir» y aceptá el cuadro de Windows "
+                "que va a aparecer."
+            ))
 
-        # ── un VLC por Chromecast: transcodifica y sirve HTTP local (mp4) ─────────
-        # pychromecast le ordena a cada Chromecast reproducir esa URL local.
-        # Se evita el módulo interno "chromecast" de VLC (poco confiable con
-        # varios dispositivos simultáneos): VLC solo transcodifica/sirve, y el
-        # control de la sesión Cast queda en pychromecast (ya usado para
-        # descubrir dispositivos).
+        # ── un solo relay HTTP para todos los Chromecasts ─────────────────────────
+        # Todos los dispositivos leen del mismo puerto; el fan-out lo hace
+        # _StreamSource con un único ffmpeg detrás.
         local_ip = _local_lan_ip()
-        BASE_PORT = 8010
-        log_dir = os.path.join(APP_DIR, "logs")
-        os.makedirs(log_dir, exist_ok=True)
+
+        self._set_status("Preparando stream…")
+        try:
+            if self._relay is None:
+                self._relay = _start_relay()
+            relay = self._relay
+            relay.set_source(stream_urls)
+        except Exception as exc:
+            self._set_status(f"Error: no se pudo abrir un puerto para el stream ({exc})",
+                             err=True)
+            self._set_btn_state("idle")
+            return
+        # El sufijo único es necesario: el puerto y la ruta son siempre los
+        # mismos, así que al cambiar de canal el Chromecast veía la misma URL
+        # que ya tenía cargada y a veces no volvía a pedirla — se quedaba con el
+        # spinner sobre el stream anterior, ya muerto. Con una URL distinta cada
+        # vez, siempre reconecta. El handler ignora la query.
+        local_url = (f"http://{local_ip}:{relay.port}/stream.mp4"
+                     f"?s={int(time.time())}")
+
+        # Esperar a que haya video REAL antes de castear (~2-3s). Si el
+        # Chromecast pide el stream cuando todavía no hay fragmentos, se cansa de
+        # esperar la respuesta HTTP y se va a IDLE: pantalla negra con el spinner
+        # y sin ningún error reportado por el canal Cast.
+        if not relay.source.wait_ready(timeout=60):
+            self._shutdown_relays()
+            self._set_status("⚠  El stream no arrancó — ¿el canal está en vivo?", err=True)
+            self._set_btn_state("idle")
+            return
+        if self._cancelled:
+            self._shutdown_relays()
+            return
 
         launched, failed = [], []
-        for i, (name, svc) in enumerate(selected):
+        for name, svc in selected:
             if self._cancelled:
                 break
-
-            # URL fresca para cada dispositivo (el primero ya la tiene)
-            if i == 0:
-                this_url = stream_url
-            else:
-                self._set_status(f"Obteniendo stream para «{name}»…")
-                try:
-                    _r = subprocess.run(
-                        ["yt-dlp", "-g",
-                         "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
-                         "--no-playlist", url],
-                        capture_output=True, timeout=25, creationflags=NO_WINDOW,
-                    )
-                    _lines = [ln.strip() for ln in _r.stdout.decode(errors="replace").splitlines()
-                              if ln.strip().startswith("http")]
-                    this_url = _lines[0] if _lines else stream_url
-                except Exception:
-                    this_url = stream_url
-
-            port = BASE_PORT + i
-            local_url = f"http://{local_ip}:{port}/stream.mp4"
-            sout = (
-                f"#transcode{{vcodec=h264,vb=2000,acodec=mp3,ab=128,"
-                f"channels=2,samplerate=44100}}"
-                f":std{{access=http,mux=mp4,dst=:{port}/stream.mp4}}"
-            )
-
-            self._set_status(f"Iniciando VLC para «{name}»…")
-            safe_name = "".join(c if c.isalnum() else "_" for c in name)
-            log_path = os.path.join(log_dir, f"vlc_{safe_name}.log")
-            try:
-                log_f = open(log_path, "wb")
-                proc = subprocess.Popen(
-                    [VLC_PATH, this_url,
-                     "--intf", "dummy", "--dummy-quiet",
-                     "--no-video-title-show",
-                     "--network-caching=3000",
-                     "--live-caching=3000",
-                     f"--sout={sout}",
-                     "--sout-keep"],
-                    stdout=log_f, stderr=subprocess.STDOUT,
-                    startupinfo=_hidden_si(),
-                )
-                self._vlc_procs.append(proc)
-            except Exception as exc:
-                failed.append(f"{name}: no se pudo iniciar VLC ({exc})")
-                continue
-
-            # esperar a que el servidor HTTP de VLC esté escuchando antes de castear
-            self._set_status(f"Esperando stream de «{name}»…")
-            if not self._wait_tcp_ready(local_ip, port, timeout=12):
-                failed.append(f"{name}: VLC no levantó el servidor HTTP a tiempo "
-                              f"(ver {log_path})")
-                continue
 
             self._set_status(f"Conectando «{name}»…")
             try:
@@ -1115,8 +1226,8 @@ class App(tk.Tk):
                 )
                 cast.wait(timeout=10)
                 mc = cast.media_controller
-                mc.play_media(local_url, "video/mp4")
-                mc.block_until_active(timeout=10)
+                mc.play_media(local_url, "video/mp4", stream_type="LIVE")
+                mc.block_until_active(timeout=15)
                 self._cast_instances.append(cast)
                 self._active_cast_names.append(name)
                 launched.append(name)
@@ -1132,19 +1243,6 @@ class App(tk.Tk):
         else:
             self._set_status(f"Error: {failed[0] if failed else 'sin dispositivos'}", err=True)
             self._set_btn_state("idle")
-
-    @staticmethod
-    def _wait_tcp_ready(host: str, port: int, timeout: float = 12) -> bool:
-        """Espera a que un puerto TCP local empiece a aceptar conexiones."""
-        import socket, time
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                with socket.create_connection((host, port), timeout=1):
-                    return True
-            except OSError:
-                time.sleep(0.4)
-        return False
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1406,49 +1504,397 @@ class App(tk.Tk):
         CalendarDialog(self)
 
     def _go_live(self):
+        """Vuelve al vivo: relanza la transmisión con URLs de stream frescas.
+        _transmit() ya cierra los relays anteriores antes de arrancar."""
         if not self._current_url:
             return
-        for proc in self._vlc_procs:
-            try: proc.kill()
-            except Exception: pass
-        self._vlc_procs.clear()
         self._url_var.set(self._current_url)
         self._transmit_thread()
 
 
 # ── utilidades ────────────────────────────────────────────────────────────────
-def _hidden_si() -> subprocess.STARTUPINFO:
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0
-    return si
+_YTDLP_STAMP = os.path.join(APP_DIR, ".ytdlp_update")
+
+
+def _update_ytdlp_daily():
+    """Corre `yt-dlp -U` como mucho una vez por día. Silencioso: si falla,
+    se sigue usando la versión que haya."""
+    try:
+        if (os.path.isfile(_YTDLP_STAMP)
+                and time.time() - os.path.getmtime(_YTDLP_STAMP) < 86400):
+            return
+        subprocess.run(["yt-dlp", "-U"], capture_output=True, timeout=180,
+                       creationflags=NO_WINDOW)
+        with open(_YTDLP_STAMP, "w") as f:
+            f.write(str(time.time()))
+        # `yt-dlp -U` deja el binario anterior como .old
+        old = YTDLP_LOCAL + ".old"
+        if os.path.isfile(old):
+            try: os.remove(old)
+            except Exception: pass
+    except Exception:
+        pass
 
 
 def _prepend_path(directory: str):
     os.environ["PATH"] = directory + os.pathsep + os.environ.get("PATH", "")
 
 
-_FIREWALL_CHECKED = False
+# Regla vieja: estaba atada a program=vlc.exe. Ya no sirve — desde que el
+# relay HTTP corre dentro de este proceso Python, quien escucha en 8010-8030
+# es python/pythonw (o el .exe empaquetado), no VLC. Se borra si quedó de
+# versiones anteriores y se reemplaza por una regla por puerto.
+_FIREWALL_RULE_OLD  = "PEPITools VLC Chromecast"
+_FIREWALL_RULE_NAME = "PEPITools Chromecast HTTP"
+_FIREWALL_OK = None  # None = sin chequear, True/False = resultado cacheado
 
 
-def _ensure_firewall_rule():
-    """Intenta abrir los puertos HTTP de VLC en el Firewall de Windows (best-effort:
-    requiere permisos de administrador; si falla, se ignora silenciosamente)."""
-    global _FIREWALL_CHECKED
-    if _FIREWALL_CHECKED:
-        return
-    _FIREWALL_CHECKED = True
+def _firewall_rule_exists(name: str = None) -> bool:
+    r = subprocess.run(
+        ["netsh", "advfirewall", "firewall", "show", "rule",
+         f"name={name or _FIREWALL_RULE_NAME}"],
+        capture_output=True, timeout=5, creationflags=NO_WINDOW,
+    )
+    return r.returncode == 0
+
+
+def _ensure_firewall_rule() -> bool:
+    """Verifica que el Firewall de Windows permita conexiones entrantes del
+    Chromecast al relay HTTP (puertos 8010-8030). Sin esta regla el Chromecast
+    conecta la sesión Cast (aparece el ícono) pero nunca puede descargar el
+    video.
+
+    La regla es por puerto y no por programa a propósito: el listener es el
+    intérprete de Python que corre esta app, cuya ruta cambia según cómo se
+    lance (python.exe, pythonw.exe, o un .exe empaquetado).
+
+    Si falta, pide una elevación (UAC) puntual para crearla — netsh no puede
+    modificar el firewall sin permisos de administrador. Devuelve True si la
+    regla existe al finalizar (ya sea porque ya estaba o porque se creó)."""
+    global _FIREWALL_OK
+    if _FIREWALL_OK:
+        return True
+
+    if _firewall_rule_exists():
+        _FIREWALL_OK = True
+        return True
+
     try:
-        subprocess.run(
-            ["netsh", "advfirewall", "firewall", "add", "rule",
-             "name=PEPITools VLC Chromecast",
-             "dir=in", "action=allow", "protocol=TCP",
-             "localport=8010-8030",
-             f"program={VLC_PATH}"],
-            capture_output=True, timeout=5, creationflags=NO_WINDOW,
-        )
+        add = (f'netsh advfirewall firewall add rule '
+               f'name="{_FIREWALL_RULE_NAME}" '
+               f'dir=in action=allow protocol=TCP localport=8010-8030')
+        # una sola elevación: borra la regla vieja (si existe) y crea la nueva
+        if _firewall_rule_exists(_FIREWALL_RULE_OLD):
+            delete = (f'netsh advfirewall firewall delete rule '
+                      f'name="{_FIREWALL_RULE_OLD}"')
+            cmd = f'/c {delete} & {add}'
+        else:
+            cmd = f'/c {add}'
+        _run_elevated_wait("cmd.exe", cmd)
     except Exception:
         pass
+
+    _FIREWALL_OK = _firewall_rule_exists()
+    return _FIREWALL_OK
+
+
+class _CastRelayHandler(BaseHTTPRequestHandler):
+    """Sirve el stream al Chromecast: un ffmpeg por conexión.
+
+    Dos detalles son críticos y costaron mucho diagnosticar:
+
+    1. **Content-Type.** El servidor HTTP interno de VLC responde HTTP/1.0
+       con `application/octet-stream`. El receptor del Chromecast usa ese
+       header para elegir el demuxer: al no reconocer el contenedor aborta
+       y vuelve a la pantalla de espera (ícono azul) sin reportar error por
+       el canal Cast — aunque pychromecast haya pedido "video/mp4". De ahí
+       el síntoma "pantalla negra y después el ícono" sin ninguna excepción
+       del lado de la app. Acá se responde HTTP/1.1 + `video/mp4`.
+
+    2. **Un ffmpeg por conexión.** El MP4 fragmentado necesita su segmento
+       de inicialización (ftyp+moov) al principio de CADA conexión. Al
+       lanzar ffmpeg dentro del handler, toda reconexión del Chromecast
+       (stop/play, cambio de fuente) recibe un stream íntegro desde el
+       arranque en lugar de caer en la mitad de un fragmento.
+
+    Se usa `-c copy`: YouTube ya entrega H.264 + AAC, que es exactamente lo
+    que el Chromecast decodifica en hardware. No se transcodifica nada, así
+    que no hay carga de CPU ni pérdida de calidad (VLC transcodificaba a
+    2 Mbps con x264 y ni siquiera llegaba a emitir un byte).
+    """
+
+    protocol_version = "HTTP/1.1"
+    server_version   = "PEPITools/1.0"
+
+    def log_message(self, *_a):     # silencia el log a stderr
+        pass
+
+    def _send_stream_headers(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        # stream en vivo: sin longitud conocida y sin saltos por rango
+        self.send_header("Accept-Ranges", "none")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "close")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def do_HEAD(self):
+        # El Chromecast a veces sondea con HEAD antes de pedir el stream.
+        self.close_connection = True
+        self._send_stream_headers()
+
+    def do_GET(self):
+        self.close_connection = True
+        src = self.server.source
+        if src is None or not src.wait_ready(timeout=30):
+            try: self.send_error(503, "stream no disponible")
+            except Exception: pass
+            return
+
+        q = src.subscribe()
+        try:
+            self._send_stream_headers()
+            # cada cliente arranca por el segmento de inicialización completo,
+            # más el último fragmento ya emitido: así tiene algo que decodificar
+            # al instante en vez de esperar al siguiente
+            self.wfile.write(src.init_segment)
+            if src.last_fragment:
+                self.wfile.write(src.last_fragment)
+            while True:
+                chunk = q.get(timeout=60)
+                if chunk is None:       # el stream terminó
+                    break
+                self.wfile.write(chunk)
+        except Exception:
+            # el Chromecast cortó la conexión (stop, cambio de fuente, etc.)
+            pass
+        finally:
+            src.unsubscribe(q)
+
+
+class _StreamSource:
+    """Un solo ffmpeg alimentando a todos los Chromecasts.
+
+    Antes se lanzaba un ffmpeg por dispositivo, lo que multiplicaba por N la
+    descarga desde YouTube. Como la PC está en WiFi, ese tráfico compite con
+    el envío a los Chromecasts por la misma radio: con 2 dispositivos en una
+    red de 2.4 GHz ya aparecía BUFFERING constante. Con una sola descarga el
+    tráfico total baja de 2N a N+1.
+
+    El MP4 fragmentado permite este fan-out: el segmento de inicialización
+    (`ftyp`+`moov`) se guarda una vez y se le manda a cada cliente nuevo, y
+    después todos reciben los mismos fragmentos (`moof`+`mdat`). Los cortes
+    se hacen en límites de fragmento para que nadie reciba un box a medias.
+    """
+
+    def __init__(self, stream_urls: list):
+        self.stream_urls  = stream_urls
+        self.init_segment = b""
+        self._last_frag   = b""     # último fragmento, para arrancar sin esperar
+        self._subs        = set()
+        self._lock        = threading.Lock()
+        self._ready       = threading.Event()   # ftyp+moov leídos
+        self._flowing     = threading.Event()   # ya salió el primer moof+mdat
+        self._proc        = None
+        self._stopped     = False
+
+    # ── ciclo de vida ─────────────────────────────────────────────────────
+    def start(self):
+        cmd = [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error"]
+        for u in self.stream_urls:
+            # Flags de baja latencia POR ENTRADA. Sin esto ffmpeg tarda ~30s en
+            # emitir el primer fragmento (llena buffers y alinea las dos
+            # entradas HLS), y en ese lapso el Chromecast abandona y se va a
+            # IDLE: pantalla negra con el spinner. Medido con un trazador de
+            # boxes MP4 sobre la salida de ffmpeg.
+            cmd += ["-fflags", "nobuffer", "-flags", "low_delay",
+                    "-analyzeduration", "2000000", "-probesize", "2000000",
+                    "-i", u]
+        if len(self.stream_urls) > 1:
+            # yt-dlp devolvió video y audio por separado (DASH)
+            cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+        # -c copy: YouTube ya entrega H.264+AAC, que es lo que el Chromecast
+        # decodifica por hardware. Sin transcodificar no hay carga de CPU.
+        #
+        # -bsf:a aac_adtstoasc es imprescindible para los streams EN VIVO: YouTube
+        # los sirve por HLS/MPEG-TS, donde el AAC viene con cabeceras ADTS que MP4
+        # no admite. Sin este filtro ffmpeg muere a los pocos KB con "Malformed AAC
+        # bitstream detected" + "Error muxing a packet", y el Chromecast se queda
+        # con el spinner para siempre. Los VOD (DASH/MP4) no lo necesitan, pero el
+        # filtro es inocuo ahí, así que se aplica siempre.
+        cmd += ["-c", "copy", "-bsf:a", "aac_adtstoasc", "-f", "mp4",
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "pipe:1"]
+        self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL,
+                                      creationflags=NO_WINDOW)
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def stop(self):
+        self._stopped = True
+        if self._proc:
+            try: self._proc.kill()
+            except Exception: pass
+        self._broadcast(None)
+
+    @property
+    def last_fragment(self) -> bytes:
+        return self._last_frag
+
+    def wait_ready(self, timeout=30) -> bool:
+        """Espera a que haya video REAL disponible, no solo la cabecera.
+
+        Esperar únicamente al `moov` no alcanza: el primer fragmento puede
+        tardar bastante más, y si el Chromecast se conecta en ese hueco se
+        queda con el spinner hasta rendirse."""
+        deadline = time.monotonic() + timeout
+        if not self._ready.wait(timeout):
+            return False
+        return self._flowing.wait(max(0.0, deadline - time.monotonic()))
+
+    # ── suscriptores ──────────────────────────────────────────────────────
+    def subscribe(self):
+        q = queue.Queue(maxsize=48)
+        with self._lock:
+            self._subs.add(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self._lock:
+            self._subs.discard(q)
+
+    def _broadcast(self, item):
+        with self._lock:
+            subs = list(self._subs)
+        for q in subs:
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                # cliente lento: se descarta el fragmento más viejo para no
+                # acumular memoria ni frenar a los demás
+                try:
+                    q.get_nowait()
+                    q.put_nowait(item)
+                except Exception:
+                    pass
+
+    # ── lectura de la salida de ffmpeg ────────────────────────────────────
+    @staticmethod
+    def _read_exactly(f, n):
+        buf = b""
+        while len(buf) < n:
+            c = f.read(n - len(buf))
+            if not c:
+                return None
+            buf += c
+        return buf
+
+    def _read_box(self, f):
+        """Lee un box MP4 completo. Devuelve (tipo, bytes) o (None, None)."""
+        hdr = self._read_exactly(f, 8)
+        if not hdr:
+            return None, None
+        size = int.from_bytes(hdr[:4], "big")
+        typ  = hdr[4:8]
+        if size == 1:                       # tamaño extendido de 64 bits
+            ext = self._read_exactly(f, 8)
+            if not ext:
+                return None, None
+            size = int.from_bytes(ext, "big")
+            hdr += ext
+        rest = size - len(hdr)
+        if rest < 0:
+            return None, None
+        body = self._read_exactly(f, rest) if rest else b""
+        if body is None:
+            return None, None
+        return typ, hdr + body
+
+    def _pump(self):
+        f = self._proc.stdout
+        init, fragment = b"", b""
+        try:
+            while not self._stopped:
+                typ, raw = self._read_box(f)
+                if raw is None:
+                    break
+                if not self._ready.is_set():
+                    # ftyp + moov = segmento de inicialización
+                    init += raw
+                    if typ == b"moov":
+                        self.init_segment = init
+                        self._ready.set()
+                    continue
+                fragment += raw
+                if typ == b"mdat":          # cierra el par moof+mdat
+                    self._last_frag = fragment
+                    self._flowing.set()
+                    self._broadcast(fragment)
+                    fragment = b""
+        except Exception:
+            pass
+        finally:
+            self._broadcast(None)
+
+
+class _CastRelayServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # OJO: allow_reuse_address debe quedar en False. En Windows, SO_REUSEADDR no
+    # significa "reusar un puerto en TIME_WAIT" como en Unix: permite que un
+    # segundo proceso se ate a un puerto YA EN USO, y el sistema reparte las
+    # conexiones entre ambos de forma impredecible. Con él en True, una instancia
+    # vieja de la app que quedó abierta se robaba las conexiones del Chromecast y
+    # le servía un stream muerto — daba exactamente el mismo síntoma (pantalla
+    # negra y spinner) que los bugs reales, y despistó el diagnóstico.
+    allow_reuse_address = False
+
+    def __init__(self, listen_port: int):
+        super().__init__(("0.0.0.0", listen_port), _CastRelayHandler)
+        self.port   = listen_port
+        self.source = None
+
+    def set_source(self, stream_urls: list) -> "_StreamSource":
+        """Cambia el stream servido sin volver a atar el puerto.
+
+        Importante que el servidor NO se cierre entre transmisiones: al
+        cerrarlo, las conexiones que quedan en TIME_WAIT dejan el puerto
+        inutilizable ~2 minutos (con allow_reuse_address=False), así que cada
+        cambio de canal saltaba al puerto siguiente y tras unos cuantos
+        cambios se quedaba sin puertos. Manteniendo el servidor fijo y
+        rotando solo la fuente, el puerto es siempre el mismo."""
+        self.stop_source()
+        self.source = _StreamSource(stream_urls)
+        self.source.start()
+        return self.source
+
+    def stop_source(self):
+        """Corta el ffmpeg actual; el servidor sigue atado al puerto."""
+        if self.source:
+            self.source.stop()
+            self.source = None
+
+    # se sigue llamando kill_children desde el cierre de la app
+    kill_children = stop_source
+
+
+def _start_relay(first_port: int = 8010, tries: int = 20):
+    """Ata el relay al primer puerto libre desde `first_port` y lo deja
+    sirviendo (todavía sin fuente). Lanza OSError si no hay ninguno libre."""
+    last = None
+    for port in range(first_port, first_port + tries):
+        try:
+            relay = _CastRelayServer(port)
+        except OSError as exc:
+            last = exc
+            continue
+        threading.Thread(target=relay.serve_forever, daemon=True).start()
+        return relay
+    raise last or OSError("sin puertos libres")
+
+
+def _ffmpeg_exe() -> str:
+    return shutil.which("ffmpeg") or FFMPEG_LOCAL
 
 
 def _local_lan_ip() -> str:
