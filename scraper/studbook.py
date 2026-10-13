@@ -187,11 +187,30 @@ def scrape_reunion(reunion: dict) -> dict:
     }
 
 
+def guardar_pdf(url: str | None, destino: Path) -> str | None:
+    """Copia el PDF del programa para servirlo desde el sitio: studbook lo manda como
+    adjunto (siempre se descarga) y GitHub Pages lo sirve para verlo en el navegador.
+    Devuelve la ruta relativa al sitio, o None si no se pudo."""
+    if not url:
+        return None
+    try:
+        r = session.get(url, timeout=60)
+        r.raise_for_status()
+        if not r.content.startswith(b"%PDF"):
+            raise ValueError("la respuesta no es un PDF")
+    except Exception as e:
+        print(f"ERROR PDF {url}: {e}", file=sys.stderr)
+        return None
+    destino.write_bytes(r.content)
+    return f"data/pdf/{destino.name}"
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     salida = Path(sys.argv[1] if len(sys.argv) > 1 else Path(__file__).parent.parent / "site" / "data")
     (salida / "reuniones").mkdir(parents=True, exist_ok=True)
+    (salida / "pdf").mkdir(exist_ok=True)
 
     hoy = datetime.now(TZ).date()
     siguiente = (hoy.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -217,6 +236,7 @@ def main():
             print(f"ERROR reunión {r['id']} ({r['fecha']} {r['hipodromo']}): {e}", file=sys.stderr)
             continue
         r["programa"] = True
+        detalle["pdf_local"] = guardar_pdf(detalle["pdf"], salida / "pdf" / f"{r['id']}.pdf")
         (salida / "reuniones" / f"{r['id']}.json").write_text(
             json.dumps(detalle, ensure_ascii=False), encoding="utf-8")
         print(f"{r['fecha']} {r['hipodromo']}: {len(detalle['carreras_detalle'])} carreras")

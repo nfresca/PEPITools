@@ -59,18 +59,35 @@ const chip = (r) =>
 const mandil = (p) =>
   `<span class="mandil" style="background:${color(p.mandil)};color:${color(p.mandil_texto)}">${esc(p.numero)}</span>`;
 
-const vivo = (r) => {
-  const c = CANALES[r.hipodromo];
-  if (!c) return `<p class="aviso">${esc(r.hipodromo)} no tiene transmisión en YouTube.</p>`;
+const urlVivo = (hipodromo) =>
+  `https://www.youtube.com/embed/live_stream?channel=${CANALES[hipodromo].id}&autoplay=1&mute=1`;
+
+// Dos reproductores lado a lado, uno por Chromecast. Cada uno elige su hipódromo.
+function vivos(predeterminados) {
+  const slot = (hipodromo, i) => `
+    <div class="vivo">
+      <div class="vivo-barra">
+        <select aria-label="Hipódromo del reproductor ${i + 1}">
+          ${Object.keys(CANALES).map((h) => `<option${h === hipodromo ? " selected" : ""}>${h}</option>`).join("")}
+        </select>
+        <a href="${CANALES[hipodromo].url}" target="_blank" rel="noopener">YouTube ↗</a>
+      </div>
+      <div class="video">
+        <iframe src="${urlVivo(hipodromo)}" title="Vivo ${i + 1}"
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
+      </div>
+    </div>`;
   return `
-    <div class="video">
-      <iframe src="https://www.youtube.com/embed/live_stream?channel=${c.id}&autoplay=1&mute=1"
-        title="Vivo ${esc(r.hipodromo)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-        allowfullscreen loading="lazy"></iframe>
-    </div>
-    <p class="links-vivo"><a href="${c.url}" target="_blank" rel="noopener">Abrir en YouTube ↗</a>
-      <span class="sutil">si no carga acá o para castear desde el celular</span></p>`;
-};
+    <section class="vivos">${predeterminados.map(slot).join("")}</section>
+    <p class="sutil">Para la tele: Cast desde cada reproductor a un Chromecast distinto.</p>`;
+}
+
+app.addEventListener("change", (e) => {
+  const vivo = e.target.closest(".vivo");
+  if (!vivo || !CANALES[e.target.value]) return;
+  vivo.querySelector("iframe").src = urlVivo(e.target.value);
+  vivo.querySelector(".vivo-barra a").href = CANALES[e.target.value].url;
+});
 
 function participante(p, resultados) {
   const detalle = [p.jockey && `J: ${esc(p.jockey)}`, p.kg && `${esc(p.kg)} kg`,
@@ -117,7 +134,7 @@ function programa(d, esHoy) {
   const proxima = esHoy ? d.carreras_detalle.find((c) => !c.resultados && (!c.hora || c.hora >= restarMin(ahora, 10))) : null;
   return `
     <div class="acciones">
-      ${d.pdf ? `<a class="boton" href="${esc(d.pdf)}" target="_blank" rel="noopener">Programa PDF ↗</a>` : ""}
+      ${d.pdf_local || d.pdf ? `<a class="boton" href="${esc(d.pdf_local || d.pdf)}" target="_blank" rel="noopener">Programa PDF ↗</a>` : ""}
       <a class="boton secundario" href="${esc(d.url)}" target="_blank" rel="noopener">Ver en studbook ↗</a>
     </div>
     <nav class="saltos">${d.carreras_detalle.map((c) => `<a href="#r${d.id}-c${c.numero}" data-salto>${c.numero}ª</a>`).join("")}</nav>
@@ -135,13 +152,13 @@ function encabezado(r) {
     <span class="sutil">${fechaLarga(r.fecha)} · ${r.carreras ?? "?"} carreras</span></h2>`;
 }
 
-async function bloqueReunion(r, { conVivo, esHoy }) {
+async function bloqueReunion(r, esHoy) {
   if (!r.programa) {
-    return `<section class="reunion">${encabezado(r)}${conVivo ? vivo(r) : ""}
+    return `<section class="reunion">${encabezado(r)}
       <p class="aviso">Sin programa cargado. <a href="${esc(r.url)}" target="_blank" rel="noopener">Ver en studbook ↗</a></p></section>`;
   }
   const d = await cargarReunion(r.id);
-  return `<section class="reunion">${encabezado(r)}${conVivo ? vivo(r) : ""}${programa(d, esHoy)}</section>`;
+  return `<section class="reunion">${encabezado(r)}${programa(d, esHoy)}</section>`;
 }
 
 // ── Vistas ──────────────────────────────────────────────────────────────────
@@ -149,24 +166,25 @@ async function bloqueReunion(r, { conVivo, esHoy }) {
 async function vistaHoy() {
   const hoy = ahoraAR().fecha;
   const deHoy = calendario.reuniones.filter((r) => r.fecha === hoy);
-  if (deHoy.length) {
-    const bloques = await Promise.all(deHoy.map((r) => bloqueReunion(r, { conVivo: true, esHoy: true })));
-    return `<h1>Hoy, ${fechaLarga(hoy)}</h1>${bloques.join("")}`;
-  }
   const proximas = calendario.reuniones.filter((r) => r.fecha > hoy);
-  if (!proximas.length) return `<h1>Hoy no hay carreras</h1><p class="aviso">Y no hay reuniones próximas cargadas.</p>`;
+  // Reproductores: los hipódromos de hoy (o de la próxima reunión); si hay uno solo, va en los dos.
+  const hips = [...new Set((deHoy.length ? deHoy : proximas).map((r) => r.hipodromo))].filter((h) => CANALES[h]);
+  const enVivo = vivos([hips[0] ?? "Palermo", hips[1] ?? hips[0] ?? "Palermo"]);
+  if (deHoy.length) {
+    const bloques = await Promise.all(deHoy.map((r) => bloqueReunion(r, true)));
+    return `<h1>Hoy, ${fechaLarga(hoy)}</h1>${enVivo}${bloques.join("")}`;
+  }
+  if (!proximas.length) return `<h1>Hoy no hay carreras</h1>${enVivo}<p class="aviso">Y no hay reuniones próximas cargadas.</p>`;
   const fecha = proximas[0].fecha;
-  const bloques = await Promise.all(proximas.filter((r) => r.fecha === fecha)
-    .map((r) => bloqueReunion(r, { conVivo: false, esHoy: false })));
-  return `<h1>Hoy no hay carreras</h1><p class="sutil">Próxima reunión: ${fechaLarga(fecha)}</p>${bloques.join("")}`;
+  const bloques = await Promise.all(proximas.filter((r) => r.fecha === fecha).map((r) => bloqueReunion(r, false)));
+  return `<h1>Hoy no hay carreras</h1>${enVivo}<p class="sutil">Próxima reunión: ${fechaLarga(fecha)}</p>${bloques.join("")}`;
 }
 
 async function vistaReunion(id) {
   const r = calendario.reuniones.find((x) => x.id === id);
   if (!r) return `<p class="aviso">No encontré esa reunión.</p>`;
-  const esHoy = r.fecha === ahoraAR().fecha;
   return `<p><a href="#/calendario/${r.fecha.slice(0, 7)}">← Calendario</a></p>` +
-    await bloqueReunion(r, { conVivo: esHoy, esHoy });
+    await bloqueReunion(r, r.fecha === ahoraAR().fecha);
 }
 
 function vistaCalendario(mes) {
@@ -206,7 +224,7 @@ function vistaCalendario(mes) {
   return `
     <div class="cal-cabecera">
       ${i > 0 ? `<a class="boton secundario" href="#/calendario/${disponibles[i - 1]}" aria-label="Mes anterior">‹</a>` : `<span></span>`}
-      <h1>${MESES[m - 1]} ${anio}</h1>
+      <h1><span class="solo-impresion">Calendario de carreras · </span>${MESES[m - 1]} ${anio}</h1>
       ${i < disponibles.length - 1 ? `<a class="boton secundario" href="#/calendario/${disponibles[i + 1]}" aria-label="Mes siguiente">›</a>` : `<span></span>`}
     </div>
     <div class="cal">
@@ -214,7 +232,8 @@ function vistaCalendario(mes) {
       ${celdas}
     </div>
     <p class="leyenda">${[...hipodromos.values()].map((r) => `${chip(r)} ${esc(r.hipodromo)}`).join(" ")}</p>
-    <p class="sutil">Las reuniones apagadas están confirmadas pero todavía no tienen programa publicado.
+    <p class="acciones no-imprimir"><button class="boton" type="button" data-imprimir>Imprimir / PDF (A4)</button></p>
+    <p class="sutil no-imprimir">Las reuniones apagadas están confirmadas pero todavía no tienen programa publicado.
       Los programas completos están disponibles para los últimos días y la próxima semana; el resto abre en studbook.</p>`;
 }
 
@@ -244,6 +263,10 @@ app.addEventListener("click", (e) => {
   const det = document.querySelector(a.getAttribute("href"));
   det.open = true;
   det.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+app.addEventListener("click", (e) => {
+  if (e.target.closest("[data-imprimir]")) window.print();
 });
 
 window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
