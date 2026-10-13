@@ -136,7 +136,6 @@ function programa(d, esHoy) {
   return `
     <div class="acciones">
       ${d.pdf_local || d.pdf ? `<a class="boton" href="${esc(d.pdf_local || d.pdf)}" target="_blank" rel="noopener">Programa PDF ↗</a>` : ""}
-      <a class="boton secundario" href="${esc(d.url)}" target="_blank" rel="noopener">Ver en studbook ↗</a>
     </div>
     <nav class="saltos">${d.carreras_detalle.map((c) => `<a href="#r${d.id}-c${c.numero}" data-salto>${c.numero}ª</a>`).join("")}</nav>
     ${d.carreras_detalle.map((c) => carrera(c, c === proxima, c === proxima, d.id)).join("")}`;

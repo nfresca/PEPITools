@@ -7,6 +7,7 @@ Genera, dentro de la carpeta de salida (por defecto site/data):
 Uso: python scraper/studbook.py [carpeta_salida]
 """
 
+import io
 import json
 import re
 import sys
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+from pypdf import PdfReader, PdfWriter
 
 BASE = "https://www.studbook.org.ar"
 TZ = timezone(timedelta(hours=-3), "ART")  # Argentina no usa horario de verano
@@ -201,8 +203,26 @@ def guardar_pdf(url: str | None, destino: Path) -> str | None:
     except Exception as e:
         print(f"ERROR PDF {url}: {e}", file=sys.stderr)
         return None
-    destino.write_bytes(r.content)
+    destino.write_bytes(sin_portada(r.content))
     return f"data/pdf/{destino.name}"
+
+
+def sin_portada(pdf: bytes) -> bytes:
+    """Quita la primera página (solo dice hipódromo, número de reunión y fecha).
+    Si esa página nombra alguna carrera, el formato cambió: se deja el PDF intacto."""
+    try:
+        lector = PdfReader(io.BytesIO(pdf))
+        if len(lector.pages) < 2 or "CARRERA" in (lector.pages[0].extract_text() or "").upper():
+            return pdf
+        escritor = PdfWriter()
+        for pagina in lector.pages[1:]:
+            escritor.add_page(pagina)
+        salida = io.BytesIO()
+        escritor.write(salida)
+        return salida.getvalue()
+    except Exception as e:
+        print(f"ERROR quitando portada del PDF: {e}", file=sys.stderr)
+        return pdf
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
