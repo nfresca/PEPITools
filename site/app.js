@@ -11,6 +11,7 @@ const TZ = "America/Argentina/Buenos_Aires";
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
                "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const DIAS = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+const DIAS_LARGOS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 
 const app = document.getElementById("app");
 let calendario = null;
@@ -31,7 +32,7 @@ const ahoraAR = () => {
 
 const fechaLarga = (iso) => {
   const d = new Date(iso + "T12:00:00");
-  return `${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}`;
+  return `${DIAS_LARGOS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}`;
 };
 
 async function getJSON(url) {
