@@ -10,7 +10,8 @@ hipódromos, el programa de cada reunión y el calendario de carreras.
 - **Programa** — cada carrera con horario, distancia, condición, bolsa y
   participantes (mandil, jockey, kilos, entrenador, últimas actuaciones). En
   las reuniones ya corridas muestra el marcador, los sports y el video de cada carrera
-- **Calendario** — el mes actual y el siguiente, con colores por hipódromo
+- **Calendario** — el mes actual y el siguiente de Palermo, San Isidro y La Plata,
+  incluidas las reuniones confirmadas que todavía no tienen programa
 - **En la tele** — se castea con el botón Cast del reproductor de YouTube
   (Chrome en la PC o la app de YouTube en el celular)
 

@@ -137,6 +137,7 @@ footer { max-width: 960px; margin: 0 auto; padding: 0 16px 2rem; color: var(--su
   font-size: .78rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .evento .sigla { display: none; font-weight: 700; }
+.evento.pendiente { opacity: .5; cursor: default; }
 .leyenda { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: center; margin-top: 1rem; }
 
 @media (max-width: 600px) {

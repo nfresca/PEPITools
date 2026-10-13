@@ -189,10 +189,14 @@ function vistaCalendario(mes) {
     const iso = `${mes}-${String(d).padStart(2, "0")}`;
     const rs = porDia[iso] ?? [];
     const links = rs.map((r) => {
+      const contenido = `<span class="sigla">${esc(r.sigla)}</span><span class="nombre">${esc(r.hipodromo)}</span>`;
+      // Confirmada pero sin programa publicado todavía: se muestra apagada y sin link.
+      if (r.id === null) {
+        return `<span class="evento pendiente" style="--c:${color(r.color)}" title="${esc(r.hipodromo)}: programa sin publicar">${contenido}</span>`;
+      }
       const href = r.programa ? `#/reunion/${r.id}` : esc(r.url);
       const ext = r.programa ? "" : ` target="_blank" rel="noopener"`;
-      return `<a class="evento" href="${href}"${ext} style="--c:${color(r.color)}" title="${esc(r.hipodromo)}: ${r.carreras ?? "?"} carreras">
-        <span class="sigla">${esc(r.sigla)}</span><span class="nombre">${esc(r.hipodromo)}</span></a>`;
+      return `<a class="evento" href="${href}"${ext} style="--c:${color(r.color)}" title="${esc(r.hipodromo)}: ${r.carreras ?? "?"} carreras">${contenido}</a>`;
     }).join("");
     const clase = ["dia", iso === hoy && "hoy", iso < hoy && "pasado"].filter(Boolean).join(" ");
     celdas += `<div class="${clase}"><span class="n">${d}</span>${links}</div>`;
@@ -210,8 +214,8 @@ function vistaCalendario(mes) {
       ${celdas}
     </div>
     <p class="leyenda">${[...hipodromos.values()].map((r) => `${chip(r)} ${esc(r.hipodromo)}`).join(" ")}</p>
-    <p class="sutil">Los programas completos están disponibles para las reuniones de los últimos días y la próxima semana;
-      el resto abre en studbook.</p>`;
+    <p class="sutil">Las reuniones apagadas están confirmadas pero todavía no tienen programa publicado.
+      Los programas completos están disponibles para los últimos días y la próxima semana; el resto abre en studbook.</p>`;
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────

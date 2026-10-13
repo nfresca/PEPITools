@@ -21,6 +21,8 @@ BASE = "https://www.studbook.org.ar"
 TZ = timezone(timedelta(hours=-3), "ART")  # Argentina no usa horario de verano
 # Reuniones con programa completo: desde DIAS_ATRAS antes de hoy hasta DIAS_ADELANTE después.
 DIAS_ATRAS, DIAS_ADELANTE = 3, 7
+# Solo estos hipódromos (nombre como aparece en studbook); el resto se ignora.
+HIPODROMOS = {"Palermo", "San Isidro", "La Plata"}
 
 # Sin un User-Agent de navegador, studbook responde 403.
 session = requests.Session()
@@ -54,20 +56,23 @@ def scrape_mes(anio: int, mes: int) -> list[dict]:
     reuniones = []
     for td in soup.select("td.box-dia[data-dia]"):
         fecha = date(int(td["data-anio"]), int(td["data-mes"]), int(td["data-dia"]))
-        for a in td.select("a[href^='/reuniones/detalle/']"):
-            m = re.match(r"/reuniones/detalle/(\d+)/", a["href"])
-            circulo = a.select_one(".box-hipo > div")
-            dato = texto(a.select_one(".box-dato"))
-            nums = [int(n) for n in re.findall(r"\d+", dato)]
+        for caja in td.select(".box-hipo"):
+            hipodromo = texto(caja.select_one(".label"))
+            if hipodromo not in HIPODROMOS:
+                continue
+            # Las reuniones futuras sin programa publicado vienen sin link a su detalle.
+            a = caja.find_parent("a", href=re.compile(r"^/reuniones/detalle/\d+/"))
+            circulo = caja.select_one(":scope > div")
+            nums = [int(n) for n in re.findall(r"\d+", texto(caja.select_one(".box-dato")))]
             reuniones.append({
-                "id": int(m.group(1)),
+                "id": int(re.search(r"\d+", a["href"]).group()) if a else None,
                 "fecha": fecha.isoformat(),
-                "hipodromo": texto(a.select_one(".label")),
+                "hipodromo": hipodromo,
                 "sigla": texto(circulo),
                 "color": color_de(circulo.get("style") if circulo else "", "color"),
                 "carreras": nums[0] if nums else None,
                 "anotados": nums[1] if len(nums) > 1 else None,
-                "url": BASE + a["href"],
+                "url": BASE + (a["href"] if a else f"/reuniones?anio={anio}&mes={mes:02d}"),
             })
     return reuniones
 
@@ -203,7 +208,7 @@ def main():
     desde, hasta = hoy - timedelta(days=DIAS_ATRAS), hoy + timedelta(days=DIAS_ADELANTE)
     errores = 0
     for r in reuniones:
-        if not desde <= date.fromisoformat(r["fecha"]) <= hasta:
+        if r["id"] is None or not desde <= date.fromisoformat(r["fecha"]) <= hasta:
             continue
         try:
             detalle = scrape_reunion(r)
