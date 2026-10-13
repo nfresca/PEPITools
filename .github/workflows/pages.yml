@@ -35,6 +35,11 @@ jobs:
       - name: Scrapear studbook
         run: python scraper/studbook.py site/data
 
+      # Cambia la URL de app.js/style.css en cada deploy para que el navegador
+      # no siga usando la versión cacheada (Pages cachea 10 minutos).
+      - name: Versionar assets
+        run: sed -i "s/__VERSION__/${GITHUB_SHA::7}/g" site/index.html
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
