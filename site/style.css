@@ -37,6 +37,10 @@ body {
 a { color: var(--acento); }
 h1 { font-size: 1.5rem; margin: .5rem 0 1rem; }
 h1::first-letter { text-transform: uppercase; }
+h1.con-resumen { margin-bottom: .35rem; }
+.resumen-hoy { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; margin: 0 0 .35rem; font-size: 1.05rem; }
+.resumen-hoy .horario { font-weight: 600; font-variant-numeric: tabular-nums; }
+.resumen-hoy + .vivos { margin-top: 1rem; }
 .sutil { color: var(--sutil); font-size: .85em; }
 .aviso { padding: 1rem; background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; }
 

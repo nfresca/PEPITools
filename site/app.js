@@ -161,6 +161,18 @@ async function bloqueReunion(r, esHoy) {
   return `<section class="reunion">${encabezado(r)}${programa(d, esHoy)}</section>`;
 }
 
+// Línea bajo el título de Hoy: hipódromo y horario de la primera a la última carrera.
+async function resumenHoy(r) {
+  let horario = "";
+  if (r.programa) {
+    const horas = (await cargarReunion(r.id)).carreras_detalle.map((c) => c.hora).filter(Boolean);
+    if (horas.length) horario = `${horas[0]} — ${horas.at(-1)} hs`;
+  }
+  return `<p class="resumen-hoy">${chip(r)} <strong>Hipódromo de ${esc(r.hipodromo)}</strong>
+    ${horario ? `<span class="horario">${horario}</span>` : ""}
+    <span class="sutil">${r.carreras ?? "?"} carreras</span></p>`;
+}
+
 // ── Vistas ──────────────────────────────────────────────────────────────────
 
 async function vistaHoy() {
@@ -171,8 +183,11 @@ async function vistaHoy() {
   const hips = [...new Set((deHoy.length ? deHoy : proximas).map((r) => r.hipodromo))].filter((h) => CANALES[h]);
   const enVivo = vivos([hips[0] ?? "Palermo", hips[1] ?? hips[0] ?? "Palermo"]);
   if (deHoy.length) {
-    const bloques = await Promise.all(deHoy.map((r) => bloqueReunion(r, true)));
-    return `<h1>Hoy, ${fechaLarga(hoy)}</h1>${enVivo}${bloques.join("")}`;
+    const [bloques, resumen] = await Promise.all([
+      Promise.all(deHoy.map((r) => bloqueReunion(r, true))),
+      Promise.all(deHoy.map(resumenHoy)),
+    ]);
+    return `<h1 class="con-resumen">Hoy, ${fechaLarga(hoy)}</h1>${resumen.join("")}${enVivo}${bloques.join("")}`;
   }
   if (!proximas.length) return `<h1>Hoy no hay carreras</h1>${enVivo}<p class="aviso">Y no hay reuniones próximas cargadas.</p>`;
   const fecha = proximas[0].fecha;
