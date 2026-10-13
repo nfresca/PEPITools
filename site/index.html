@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PEPITools</title>
+  <meta name="description" content="Turf argentino: vivo de los hipódromos, programas y calendario de carreras.">
+  <meta name="theme-color" content="#14181f">
+  <link rel="icon" href="pepi.png">
+  <link rel="apple-touch-icon" href="pepi.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="marca" href="#/"><img src="pepi.png" alt="" width="36" height="36"> PEPITools</a>
+    <nav>
+      <a href="#/" data-tab="hoy">Hoy</a>
+      <a href="#/calendario" data-tab="calendario">Calendario</a>
+    </nav>
+  </header>
+  <main id="app" aria-live="polite"><p class="aviso">Cargando…</p></main>
+  <footer>
+    <p>Para verlo en la tele: tocá el ícono <strong>Cast</strong> del reproductor (Chrome o la app de YouTube).</p>
+    <p>Programas y calendario: <a href="https://www.studbook.org.ar/reuniones" target="_blank" rel="noopener">studbook.org.ar</a> · <span id="actualizado"></span></p>
+  </footer>
+</body>
+</html>

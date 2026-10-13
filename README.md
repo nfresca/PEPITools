@@ -1,96 +1,45 @@
 # PEPITools
 
-Aplicación de escritorio para Windows que transmite el stream en vivo de los hipódromos argentinos directamente a dispositivos **Chromecast**, sin necesidad de abrir un navegador.
+Web para seguir el turf argentino desde cualquier navegador: el vivo de los
+hipódromos, el programa de cada reunión y el calendario de carreras.
 
----
+## Qué tiene
 
-## Características
+- **Hoy** — las reuniones del día con el vivo de YouTube embebido (Palermo,
+  San Isidro, La Plata) y el programa completo, con la próxima carrera resaltada
+- **Programa** — cada carrera con horario, distancia, condición, bolsa y
+  participantes (mandil, jockey, kilos, entrenador, últimas actuaciones). En
+  las reuniones ya corridas muestra el marcador, los sports y el video de cada carrera
+- **Calendario** — el mes actual y el siguiente, con colores por hipódromo
+- **En la tele** — se castea con el botón Cast del reproductor de YouTube
+  (Chrome en la PC o la app de YouTube en el celular)
 
-- **Transmisión a Chromecast** — envía el stream a uno o varios dispositivos Chromecast en tu red local simultáneamente
-- **Presets de hipódromos** — acceso rápido a Palermo, San Isidro y La Plata con un solo clic
-- **Detección automática de dispositivos** — escanea la red y lista todos los Chromecasts disponibles
-- **Hipódromo del día** — muestra automáticamente qué hipódromo corre hoy y sus horarios (datos de [turfpremium.com.ar](https://turfpremium.com.ar))
-- **Calendario mensual** — visualización del mes con colores por hipódromo
-- **Programa oficial** — abre el PDF del programa del día con un clic
-- **Ir al vivo** — reconecta el stream desde el inicio para eliminar el retraso acumulado
-- **Sin dependencias que instalar** — el instalador trae todo; `yt-dlp` y `ffmpeg` se descargan solos en el primer arranque y `yt-dlp` se mantiene actualizado
+Los datos salen de [studbook.org.ar](https://www.studbook.org.ar/reuniones).
 
----
+## Cómo funciona
 
-## Requisitos
+Es un sitio estático en GitHub Pages; no hay servidor.
 
-- Windows 10/11 (64 bits)
-- Red local con Chromecast
-- Conexión a internet en el primer arranque (descarga `yt-dlp` y `ffmpeg`)
+1. `scraper/studbook.py` baja el calendario y los programas de studbook y los
+   guarda como JSON en `site/data/`
+2. El workflow `.github/workflows/pages.yml` corre el scraper cada hora (y en
+   cada push) y publica la carpeta `site/`
+3. `site/app.js` lee esos JSON y arma las vistas en el navegador
 
-No hace falta instalar Python ni VLC.
+Se descargan programas completos solo de las reuniones entre 3 días atrás y 7
+días adelante; el resto del calendario enlaza a studbook.
 
----
-
-## Instalación
-
-1. Descargá **`PEPITools-Setup.exe`** desde [Releases](https://github.com/nfresca/PEPITools/releases)
-2. Ejecutalo. No pide permisos de administrador: se instala solo para tu usuario
-3. Abrí PEPITools desde el escritorio o el menú de inicio
-
-En el primer arranque descarga `yt-dlp` y `ffmpeg` (~120 MB en total). Puede
-tardar unos minutos según la conexión; después ya no vuelve a hacerlo.
-
-### Uso
-
-1. Seleccioná un hipódromo o pegá cualquier URL de YouTube en el link manual
-2. Hacé clic en **↻** para buscar Chromecasts en tu red
-3. Seleccioná los dispositivos y presioná **Transmitir**
-
-### Dónde guarda sus datos
-
-Los presets, el calendario, la caché y los binarios descargados van a
-`%LOCALAPPDATA%\PEPITools`. Se conservan al actualizar y se borran al
-desinstalar.
-
----
-
-## Ejecutar desde el código fuente
+## Correrlo local
 
 ```bash
 pip install -r requirements.txt
-python transmiturf.py
+python scraper/studbook.py
+python -m http.server -d site
 ```
 
-O hacé doble clic en `PEPITools.bat`, que instala Python si falta.
+y abrir <http://localhost:8000>.
 
-## Compilar el instalador
+## Publicarlo
 
-Necesita [Inno Setup 6](https://jrsoftware.org/isinfo.php):
-
-```bash
-pip install -r requirements.txt pyinstaller
-pyinstaller --noconfirm PEPITools.spec
-ISCC.exe PEPITools.iss          # genera Output\PEPITools-Setup.exe
-```
-
-También se compila solo en GitHub Actions al publicar un tag (`v*`).
-
----
-
-## Tecnologías
-
-| Herramienta | Uso |
-|---|---|
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Extrae la URL del stream de YouTube |
-| [ffmpeg](https://ffmpeg.org/) | Reempaqueta el stream a MP4 fragmentado (sin recodificar) |
-| [pychromecast](https://github.com/balloob/pychromecast) | Descubre los Chromecast y controla la reproducción |
-| [tkinter](https://docs.python.org/3/library/tkinter.html) | Interfaz gráfica |
-| [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | Scraping del calendario de carreras |
-
----
-
-## Hipódromos soportados
-
-| Hipódromo | Stream |
-|---|---|
-| Hipódromo de Palermo | YouTube oficial |
-| Hipódromo de San Isidro | YouTube oficial |
-| Hipódromo de La Plata | YouTube oficial |
-
-Las URLs de stream se pueden configurar desde el botón **⚙** dentro de la app.
+En el repo de GitHub: **Settings → Pages → Source: GitHub Actions**. Después
+de eso, cada push a `master` y cada hora se republica sola.

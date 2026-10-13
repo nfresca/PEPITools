@@ -1,12 +1,5 @@
-# Acceso directo (rutas absolutas, no portable)
-PEPITools.lnk
-
-# Generados en tiempo de ejecución
-calendario_cache.json
-pepistream.ico
-yt-dlp.exe
-ffmpeg.exe
-logs/
+# Generado por el scraper
+site/data/
 
 # Config de Claude Code
 .claude/
@@ -14,10 +7,14 @@ logs/
 # Python
 __pycache__/
 *.pyc
-*.pyo
-.ytdlp_update
 
-# Empaquetado (PyInstaller / Inno Setup)
+# Restos locales de la vieja app de escritorio
 build/
 dist/
 Output/
+logs/
+*.exe
+*.ico
+*.lnk
+calendario_cache.json
+.ytdlp_update
